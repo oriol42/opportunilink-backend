@@ -1,0 +1,46 @@
+# ================================
+# OpportuLink Backend — Dependencies
+# ================================
+
+# --- Web Framework ---
+fastapi==0.111.0          # Le framework API principal
+uvicorn[standard]==0.30.1 # Serveur ASGI qui fait tourner FastAPI
+
+# --- Database ---
+sqlalchemy==2.0.31        # ORM : traduit Python <-> SQL
+alembic==1.13.1           # Migrations : versionne ta DB comme Git versionne ton code
+psycopg2-binary==2.9.9    # Driver PostgreSQL (le "câble" entre Python et Postgres)
+
+# --- Validation ---
+pydantic==2.7.4           # Validation des données (Pydantic v2, intégré à FastAPI)
+pydantic-settings==2.3.1  # Charge les variables .env dans Pydantic
+
+# --- Auth & Sécurité ---
+python-jose[cryptography]==3.3.0  # Génère et vérifie les JWT
+passlib[bcrypt]==1.7.4            # Hache les mots de passe (bcrypt = standard sécurisé)
+bcrypt==4.0.1
+python-multipart==0.0.9           # Permet à FastAPI de recevoir des fichiers uploadés
+
+# --- Supabase ---
+supabase==2.5.0           # Client Supabase (Storage + Auth helper)
+
+# --- IA ---
+google-generativeai==0.7.2  # SDK Gemini API (Google)
+
+# --- Async Tasks ---
+celery==5.4.0             # File de tâches asynchrones (crawler, alertes)
+redis==5.0.6              # Client Redis (broker pour Celery + cache)
+
+# --- Notifications ---
+africastalking==1.2.5     # SMS MTN/Orange Cameroun
+resend==2.2.0             # Emails transactionnels
+
+# --- Crawler ---
+scrapy==2.11.2            # Scraping sites statiques
+playwright==1.44.0        # Scraping sites avec JavaScript (rendu navigateur)
+beautifulsoup4==4.12.3    # Parsing HTML (utilisé dans le pipeline)
+httpx==0.27.0             # Client HTTP async (pour les appels API externes)
+
+# --- Utilitaires ---
+python-dotenv==1.0.1      # Charge le fichier .env localement
+slowapi==0.1.9            # Rate limiting (protège l'API des abus)mot de passe pour beyond supabase
