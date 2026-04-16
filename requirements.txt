@@ -18,7 +18,6 @@ pydantic-settings==2.3.1  # Charge les variables .env dans Pydantic
 # --- Auth & Sécurité ---
 python-jose[cryptography]==3.3.0  # Génère et vérifie les JWT
 passlib[bcrypt]==1.7.4            # Hache les mots de passe (bcrypt = standard sécurisé)
-bcrypt==4.0.1
 python-multipart==0.0.9           # Permet à FastAPI de recevoir des fichiers uploadés
 
 # --- Supabase ---
@@ -43,4 +42,4 @@ httpx==0.27.0             # Client HTTP async (pour les appels API externes)
 
 # --- Utilitaires ---
 python-dotenv==1.0.1      # Charge le fichier .env localement
-slowapi==0.1.9            # Rate limiting (protège l'API des abus)mot de passe pour beyond supabase
+slowapi==0.1.9            # Rate limiting (protège l'API des abus)monmotdepassesupabase
