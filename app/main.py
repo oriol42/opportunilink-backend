@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 import time
 import logging
 from app.routes import opportunities
-
+from app.routes import documents
 
 from app.config import settings
 from app.database import engine, Base
@@ -157,4 +157,13 @@ app.include_router(
     opportunities.router,
     prefix="/api/v1/opportunities",
     tags=["Opportunities"],
+)
+
+
+
+
+app.include_router(
+    documents.router,
+    prefix="/api/v1/documents",
+    tags=["Documents"],
 )
