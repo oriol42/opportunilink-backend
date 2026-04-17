@@ -6,6 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import time
 import logging
+from app.routes import opportunities
+
 
 from app.config import settings
 from app.database import engine, Base
@@ -147,4 +149,12 @@ app.include_router(
     users.router,
     prefix="/api/v1/users",
     tags=["Users"],
+)
+
+# Import ajouté Phase 1
+
+app.include_router(
+    opportunities.router,
+    prefix="/api/v1/opportunities",
+    tags=["Opportunities"],
 )
