@@ -8,6 +8,7 @@ import time
 import logging
 from app.routes import opportunities
 from app.routes import documents
+from app.routes import applications
 
 from app.config import settings
 from app.database import engine, Base
@@ -162,6 +163,11 @@ app.include_router(
 
 
 
+app.include_router(
+    applications.router,
+    prefix="/api/v1/applications",
+    tags=["Applications"],
+)
 app.include_router(
     documents.router,
     prefix="/api/v1/documents",
