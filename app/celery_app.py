@@ -5,14 +5,16 @@ from app.config import settings
 
 redis_url = settings.redis_url or "redis://localhost:6379/0"
 
-# SSL options required for rediss:// (Upstash)
 ssl_options = {"ssl_cert_reqs": "none"} if redis_url.startswith("rediss://") else {}
 
 celery_app = Celery(
     "opportunilink",
     broker=redis_url,
     backend=redis_url,
-    include=["app.tasks.alert_tasks"],
+    include=[
+        "app.tasks.alert_tasks",
+        "app.tasks.crawler_tasks",  # spiders automatiques
+    ],
 )
 
 celery_app.conf.update(
@@ -26,8 +28,19 @@ celery_app.conf.update(
 )
 
 celery_app.conf.beat_schedule = {
+    # Alertes deadlines — tous les jours à 8h
     "send-deadline-alerts-daily": {
         "task": "app.tasks.alert_tasks.send_deadline_alerts",
         "schedule": crontab(hour=8, minute=0),
+    },
+    # OpportunityDesk — toutes les 12h (6h et 18h)
+    "crawl-opportunity-desk-twice-daily": {
+        "task": "crawl_opportunity_desk",
+        "schedule": crontab(hour="6,18", minute=0),
+    },
+    # Remotive jobs — une fois par jour à 7h
+    "crawl-remotive-daily": {
+        "task": "crawl_remotive",
+        "schedule": crontab(hour=7, minute=0),
     },
 }

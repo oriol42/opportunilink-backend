@@ -14,8 +14,10 @@ from app.schemas.opportunity import (
 from app.core.dependencies import get_current_user
 from app.services.matching import build_personalized_feed
 from app.services.scoring import compute_preparation_score
+from app.services.cache import cache_get, cache_set, cache_delete_pattern
 
 router = APIRouter()
+
 
 @router.get("", response_model=list[OpportunityFeedItem])
 def get_feed(
@@ -27,6 +29,20 @@ def get_feed(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # Cache key is unique per user + filters + page
+    # So user A and user B never share the same cached feed (scores are personalized)
+    cache_key = (
+        f"feed:user:{current_user.id}"
+        f":page:{page}:limit:{limit}"
+        f":type:{type}:country:{country}:search:{search}"
+    )
+
+    # 1. Try cache first
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    # 2. Cache miss — compute the feed
     query = db.query(Opportunity).filter(Opportunity.is_active == True)
     if type:
         query = query.filter(Opportunity.type == type)
@@ -34,6 +50,7 @@ def get_feed(
         query = query.filter(Opportunity.country.ilike(country))
     if search:
         query = query.filter(Opportunity.title.ilike(f"%{search}%"))
+
     opportunities = query.all()
     ranked = build_personalized_feed(
         user=current_user,
@@ -41,12 +58,19 @@ def get_feed(
         page=page,
         limit=limit,
     )
+
     result = []
     for opp, score in ranked:
         item = OpportunityFeedItem.model_validate(opp)
         item.relevance_score = score
         result.append(item)
+
+    # 3. Serialize and store in cache for 5 minutes
+    serialized = [i.model_dump(mode="json") for i in result]
+    cache_set(cache_key, serialized, ttl_seconds=300)
+
     return result
+
 
 @router.get("/{opportunity_id}", response_model=OpportunityResponse)
 def get_opportunity(
@@ -62,6 +86,7 @@ def get_opportunity(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found")
     return opp
 
+
 @router.get("/{opportunity_id}/prep-score")
 def get_prep_score(
     opportunity_id: uuid.UUID,
@@ -72,6 +97,7 @@ def get_prep_score(
     if not opp:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found")
     return compute_preparation_score(user=current_user, opp=opp, db=db)
+
 
 @router.post("", response_model=OpportunityResponse, status_code=status.HTTP_201_CREATED)
 def create_opportunity(
@@ -84,16 +110,18 @@ def create_opportunity(
     db.commit()
     db.refresh(opp)
 
-    # Trigger alert creation for eligible users (async, non-blocking)
+    # Invalidate all feed caches — new opportunity affects everyone's feed
+    cache_delete_pattern("feed:user:*")
+
     try:
         from app.tasks.alert_tasks import create_alerts_for_opportunity
         create_alerts_for_opportunity.delay(str(opp.id))
     except Exception as e:
-        # If Celery/Redis is unavailable, log and continue — don't fail the request
         import logging
         logging.getLogger(__name__).warning(f"Could not enqueue alert task: {e}")
 
     return opp
+
 
 @router.post("/{opportunity_id}/report", status_code=status.HTTP_201_CREATED)
 def report_opportunity(
