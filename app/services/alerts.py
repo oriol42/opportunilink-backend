@@ -62,7 +62,7 @@ def send_email(to: str, subject: str, html: str) -> bool:
     try:
         resend.api_key = settings.resend_api_key
         params = {
-            "from": "OpportuLink <alerts@opportunilink.cm>",
+            "from": "OpportuLink <onboarding@resend.dev>",
             "to": [to],
             "subject": subject,
             "html": html,
