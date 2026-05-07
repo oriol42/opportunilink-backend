@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     # --- AI (optionnel pour le MVP) ---
     gemini_api_key: str | None = None
+    groq_api_key: str | None = None
     # --- Cache & Tasks (optionnel pour le MVP) ---
     redis_url: str | None = None
     # --- Notifications (optionnel pour le MVP) ---

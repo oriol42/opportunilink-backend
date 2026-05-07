@@ -13,7 +13,7 @@ from app.routes import applications
 from app.config import settings
 from app.database import engine, Base
 
-from app.routes import auth,users
+from app.routes import auth, users, ai_coach
 # LOGGING SETUP
 
 # Configures Python's built-in logger.
@@ -172,4 +172,10 @@ app.include_router(
     documents.router,
     prefix="/api/v1/documents",
     tags=["Documents"],
+)
+
+app.include_router(
+    ai_coach.router,
+    prefix="/api/v1/ai",
+    tags=["AI Coach"],
 )
