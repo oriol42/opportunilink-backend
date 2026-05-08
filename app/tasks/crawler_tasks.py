@@ -1,7 +1,4 @@
 # app/tasks/crawler_tasks.py
-# Celery tasks that trigger Scrapy spiders automatically.
-# Each spider runs in its own subprocess to avoid event loop conflicts.
-
 import subprocess
 import logging
 import os
@@ -9,29 +6,24 @@ from app.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-# All available spiders — add new ones here as we build them
-SPIDERS = ["opportunity_desk", "remotive"]
+# All active spiders — add new ones here as we build them
+SPIDERS = ["opportunity_desk", "remotive", "the_muse"]
 
 
 def _run_spider(spider_name: str, max_items: int = 100) -> dict:
-    """
-    Run a single Scrapy spider in a subprocess.
-    Returns a dict with status and output.
-    """
+    """Run a single Scrapy spider in a subprocess."""
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
     result = subprocess.run(
         [
             "scrapy", "crawl", spider_name,
             "-s", f"CLOSESPIDER_ITEMCOUNT={max_items}",
-            "-s", "LOG_LEVEL=WARNING",  # Only show warnings+ in Celery logs
+            "-s", "LOG_LEVEL=WARNING",
         ],
         cwd=project_root,
         capture_output=True,
         text=True,
-        timeout=300,  # Kill after 5 minutes max
+        timeout=300,
     )
-
     if result.returncode == 0:
         logger.info(f"Spider '{spider_name}' completed successfully")
         return {"status": "success", "spider": spider_name}
@@ -52,15 +44,17 @@ def crawl_remotive():
     return _run_spider("remotive", max_items=100)
 
 
+@celery_app.task(name="crawl_the_muse")
+def crawl_the_muse():
+    """Scrape The Muse public API — international jobs — runs every 24 hours."""
+    return _run_spider("the_muse", max_items=120)
+
+
 @celery_app.task(name="crawl_all")
 def crawl_all():
-    """
-    Run all spiders sequentially.
-    Called by Celery Beat on a schedule.
-    """
+    """Run all spiders sequentially. Used for full manual refresh."""
     results = []
     for spider in SPIDERS:
         logger.info(f"Starting spider: {spider}")
-        result = _run_spider(spider, max_items=50)
-        results.append(result)
+        results.append(_run_spider(spider, max_items=50))
     return results
