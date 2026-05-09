@@ -1,16 +1,14 @@
-# app/routes/opportunities.py
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from typing import Optional
 import uuid
+
 from app.database import get_db
 from app.models.user import User
 from app.models.opportunity import Opportunity
-from app.schemas.opportunity import (
-    OpportunityCreate,
-    OpportunityResponse,
-    OpportunityFeedItem,
-)
+from app.models.saved import SavedOpportunity
+from app.schemas.opportunity import OpportunityCreate, OpportunityResponse, OpportunityFeedItem
 from app.core.dependencies import get_current_user
 from app.services.matching import build_personalized_feed
 from app.services.scoring import compute_preparation_score
@@ -29,20 +27,15 @@ def get_feed(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Cache key is unique per user + filters + page
-    # So user A and user B never share the same cached feed (scores are personalized)
     cache_key = (
         f"feed:user:{current_user.id}"
         f":page:{page}:limit:{limit}"
         f":type:{type}:country:{country}:search:{search}"
     )
-
-    # 1. Try cache first
     cached = cache_get(cache_key)
     if cached is not None:
         return cached
 
-    # 2. Cache miss — compute the feed
     query = db.query(Opportunity).filter(Opportunity.is_active == True)
     if type:
         query = query.filter(Opportunity.type == type)
@@ -52,11 +45,14 @@ def get_feed(
         query = query.filter(Opportunity.title.ilike(f"%{search}%"))
 
     opportunities = query.all()
+
+    # On passe db pour que l'historique soit pris en compte
     ranked = build_personalized_feed(
         user=current_user,
         opportunities=opportunities,
         page=page,
         limit=limit,
+        db=db,
     )
 
     result = []
@@ -65,11 +61,28 @@ def get_feed(
         item.relevance_score = score
         result.append(item)
 
-    # 3. Serialize and store in cache for 5 minutes
     serialized = [i.model_dump(mode="json") for i in result]
     cache_set(cache_key, serialized, ttl_seconds=300)
-
     return result
+
+
+# IMPORTANT: /saved AVANT /{opportunity_id}
+@router.get("/saved", response_model=list[OpportunityFeedItem])
+def get_saved_opportunities(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    saved = db.query(SavedOpportunity).filter(
+        SavedOpportunity.user_id == current_user.id
+    ).all()
+    opp_ids = [s.opportunity_id for s in saved]
+    if not opp_ids:
+        return []
+    opps = db.query(Opportunity).filter(
+        Opportunity.id.in_(opp_ids),
+        Opportunity.is_active == True,
+    ).all()
+    return [OpportunityFeedItem.model_validate(opp) for opp in opps]
 
 
 @router.get("/{opportunity_id}", response_model=OpportunityResponse)
@@ -83,7 +96,7 @@ def get_opportunity(
         Opportunity.is_active == True,
     ).first()
     if not opp:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found")
+        raise HTTPException(status_code=404, detail="Opportunity not found")
     return opp
 
 
@@ -95,8 +108,35 @@ def get_prep_score(
 ):
     opp = db.query(Opportunity).filter(Opportunity.id == opportunity_id).first()
     if not opp:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found")
+        raise HTTPException(status_code=404, detail="Opportunity not found")
     return compute_preparation_score(user=current_user, opp=opp, db=db)
+
+
+@router.post("/{opportunity_id}/save", status_code=status.HTTP_200_OK)
+def toggle_save_opportunity(
+    opportunity_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    existing = db.query(SavedOpportunity).filter(
+        SavedOpportunity.user_id == current_user.id,
+        SavedOpportunity.opportunity_id == opportunity_id,
+    ).first()
+    if existing:
+        db.delete(existing)
+        db.commit()
+        cache_delete_pattern(f"feed:user:{current_user.id}*")
+        return {"saved": False}
+    opp = db.query(Opportunity).filter(Opportunity.id == opportunity_id).first()
+    if not opp:
+        raise HTTPException(status_code=404, detail="Opportunity not found")
+    try:
+        db.add(SavedOpportunity(user_id=current_user.id, opportunity_id=opportunity_id))
+        db.commit()
+        cache_delete_pattern(f"feed:user:{current_user.id}*")
+    except IntegrityError:
+        db.rollback()
+    return {"saved": True}
 
 
 @router.post("", response_model=OpportunityResponse, status_code=status.HTTP_201_CREATED)
@@ -109,17 +149,13 @@ def create_opportunity(
     db.add(opp)
     db.commit()
     db.refresh(opp)
-
-    # Invalidate all feed caches — new opportunity affects everyone's feed
     cache_delete_pattern("feed:user:*")
-
     try:
         from app.tasks.alert_tasks import create_alerts_for_opportunity
         create_alerts_for_opportunity.delay(str(opp.id))
     except Exception as e:
         import logging
-        logging.getLogger(__name__).warning(f"Could not enqueue alert task: {e}")
-
+        logging.getLogger(__name__).warning(f"Alert task failed: {e}")
     return opp
 
 
@@ -134,11 +170,6 @@ def report_opportunity(
     opp = db.query(Opportunity).filter(Opportunity.id == opportunity_id).first()
     if not opp:
         raise HTTPException(status_code=404, detail="Opportunity not found")
-    report = Report(
-        opportunity_id=opportunity_id,
-        reported_by=current_user.id,
-        reason=reason,
-    )
-    db.add(report)
+    db.add(Report(opportunity_id=opportunity_id, reported_by=current_user.id, reason=reason))
     db.commit()
-    return {"message": "Report submitted. Thank you for helping keep OpportuLink safe."}
+    return {"message": "Signalement soumis. Merci."}

@@ -1,4 +1,3 @@
-# app/celery_app.py
 from celery import Celery
 from celery.schedules import crontab
 from app.config import settings
@@ -27,24 +26,54 @@ celery_app.conf.update(
 )
 
 celery_app.conf.beat_schedule = {
-    # Alertes deadlines — tous les jours à 8h
+
+    # ── Alertes ────────────────────────────────────────────────────
     "send-deadline-alerts-daily": {
         "task": "app.tasks.alert_tasks.send_deadline_alerts",
         "schedule": crontab(hour=8, minute=0),
     },
-    # OpportunityDesk — bourses/stages Afrique — toutes les 12h
+
+    # ── Crawlers existants ─────────────────────────────────────────
     "crawl-opportunity-desk-twice-daily": {
         "task": "crawl_opportunity_desk",
         "schedule": crontab(hour="6,18", minute=0),
     },
-    # Remotive — emplois remote tech — tous les jours à 7h
     "crawl-remotive-daily": {
         "task": "crawl_remotive",
         "schedule": crontab(hour=7, minute=0),
     },
-    # The Muse — emplois internationaux — tous les jours à 7h30
     "crawl-the-muse-daily": {
         "task": "crawl_the_muse",
         "schedule": crontab(hour=7, minute=30),
+    },
+    "crawl-daad-daily": {
+        "task": "crawl_daad",
+        "schedule": crontab(hour=8, minute=30),
+    },
+    "crawl-campus-france-daily": {
+        "task": "crawl_campus_france",
+        "schedule": crontab(hour=9, minute=0),
+    },
+
+    # ── Nouveaux crawlers ──────────────────────────────────────────
+    "crawl-reliefweb-twice-daily": {
+        "task": "crawl_reliefweb",
+        "schedule": crontab(hour="5,17", minute=30),   # 5h30 + 17h30
+    },
+    "crawl-auf-daily": {
+        "task": "crawl_auf",
+        "schedule": crontab(hour=9, minute=30),
+    },
+    "crawl-scholars4dev-daily": {
+        "task": "crawl_scholars4dev",
+        "schedule": crontab(hour=10, minute=0),
+    },
+    "crawl-mtn-cm-weekly": {
+        "task": "crawl_mtn_cm",
+        "schedule": crontab(hour=10, minute=30, day_of_week="1"),  # Lundi
+    },
+    "crawl-euraxess-daily": {
+        "task": "crawl_euraxess",
+        "schedule": crontab(hour=11, minute=0),
     },
 }

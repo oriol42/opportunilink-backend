@@ -38,6 +38,7 @@ class User(TimeStampedModel):
     documents = relationship("Document", back_populates="user")
     alerts = relationship("Alert", back_populates="user")
     reports = relationship("Report", back_populates="reporter")
+    saved_opportunities = relationship("SavedOpportunity", back_populates="user")
 
     def __repr__(self):
         return f"<User {self.email}>"

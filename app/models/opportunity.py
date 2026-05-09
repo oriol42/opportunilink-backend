@@ -47,6 +47,7 @@ class Opportunity(TimeStampedModel):
     applications = relationship("Application", back_populates="opportunity")
     alerts = relationship("Alert", back_populates="opportunity")
     reports = relationship("Report", back_populates="opportunity")
+    saved_by = relationship("SavedOpportunity", back_populates="opportunity")
 
     def __repr__(self):
         return f"<Opportunity {self.title[:50]}>"
