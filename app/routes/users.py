@@ -157,3 +157,129 @@ def get_my_stats(
         "opportuni_score":   current_user.opportuni_score,
         "member_since":      current_user.created_at.strftime("%B %Y"),
     }
+
+
+# GET /users/me/coaching — Prochaine action recommandée
+
+@router.get("/me/coaching")
+def get_coaching(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Analyse le profil et l'activité de l'utilisateur.
+    Retourne UNE prochaine action prioritaire + des insights.
+    Principe : toujours donner quelque chose d'actionnable.
+    """
+    from app.models.application import Application
+    from app.models.document import Document
+    from app.models.saved import SavedOpportunity
+    from app.models.opportunity import Opportunity
+    from datetime import date, timedelta
+
+    apps  = db.query(Application).filter(Application.user_id == current_user.id).all()
+    docs  = db.query(Document).filter(Document.user_id == current_user.id).all()
+    saved = db.query(SavedOpportunity).filter(SavedOpportunity.user_id == current_user.id).all()
+    doc_types = {d.type for d in docs}
+
+    # Deadlines urgentes dans les favoris
+    urgent = []
+    if saved:
+        opp_ids = [s.opportunity_id for s in saved]
+        opps = db.query(Opportunity).filter(
+            Opportunity.id.in_(opp_ids),
+            Opportunity.is_active == True,
+        ).all()
+        for opp in opps:
+            if opp.deadline:
+                days = (opp.deadline - date.today()).days
+                if 0 <= days <= 7:
+                    urgent.append({"title": opp.title, "days": days, "id": str(opp.id)})
+        urgent.sort(key=lambda x: x["days"])
+
+    # Déterminer la prochaine action prioritaire
+    action = None
+    action_type = None
+
+    if urgent:
+        # Priorité 1 — deadline urgente dans les favoris
+        u = urgent[0]
+        action = f"Tu as sauvegardé \"{u['title'][:50]}\" — deadline dans {u['days']} jour(s). C'est le moment de postuler."
+        action_type = "urgent"
+        action_url  = f"/opportunity/{u['id']}"
+        action_cta  = "Postuler maintenant →"
+
+    elif not current_user.level or not current_user.field:
+        # Priorité 2 — profil incomplet bloquant
+        action = "Ton niveau d'études et ta filière ne sont pas renseignés. Sans ça, le feed ne peut pas calculer ton score de pertinence."
+        action_type = "profile"
+        action_url  = "/dashboard/profile"
+        action_cta  = "Compléter mon profil →"
+
+    elif "cv" not in doc_types:
+        # Priorité 3 — CV manquant (bloquant pour prep score)
+        action = "Tu n'as pas encore uploadé ton CV. Sans lui, ton score de préparation sera faible sur toutes les opportunités."
+        action_type = "document"
+        action_url  = "/dashboard/documents"
+        action_cta  = "Uploader mon CV →"
+
+    elif not current_user.gpa:
+        # Priorité 4 — moyenne manquante
+        action = "Ta moyenne n'est pas renseignée. Elle détermine ton éligibilité à 60% des bourses disponibles."
+        action_type = "profile"
+        action_url  = "/dashboard/profile"
+        action_cta  = "Ajouter ma moyenne →"
+
+    elif "releve" not in doc_types:
+        action = "Tes relevés de notes sont manquants. Ils sont requis par la majorité des bourses."
+        action_type = "document"
+        action_url  = "/dashboard/documents"
+        action_cta  = "Uploader mes relevés →"
+
+    elif not apps:
+        action = "Tu n'as encore aucune candidature. Consulte le feed et postule à une opportunité qui te correspond."
+        action_type = "apply"
+        action_url  = "/dashboard"
+        action_cta  = "Voir les opportunités →"
+
+    elif len(apps) > 0 and all(a.status == "draft" for a in apps):
+        action = f"Tu as {len(apps)} candidature(s) en brouillon. N'oublie pas de les soumettre avant les deadlines."
+        action_type = "submit"
+        action_url  = "/dashboard/applications"
+        action_cta  = "Voir mes candidatures →"
+
+    else:
+        action = "Ton dossier est bien avancé ! Explore le feed pour trouver de nouvelles opportunités qui te correspondent."
+        action_type = "explore"
+        action_url  = "/dashboard"
+        action_cta  = "Explorer le feed →"
+
+    # Insights — métriques utiles
+    submitted_count = sum(1 for a in apps if a.status == "submitted")
+    accepted_count  = sum(1 for a in apps if a.status == "accepted")
+    docs_pct = round(len(doc_types & {"cv", "releve", "cni", "attestation"}) / 4 * 100)
+
+    profile_fields = [
+        current_user.level, current_user.field, current_user.gpa,
+        current_user.city, current_user.phone,
+        current_user.languages if current_user.languages else None,
+        current_user.skills if current_user.skills else None,
+    ]
+    profile_pct = round(sum(1 for f in profile_fields if f) / len(profile_fields) * 100)
+
+    return {
+        "action": action,
+        "action_type": action_type,
+        "action_url": action_url,
+        "action_cta": action_cta,
+        "urgent_deadlines": urgent[:3],
+        "insights": {
+            "profile_pct":    profile_pct,
+            "docs_pct":       docs_pct,
+            "applied":        len(apps),
+            "submitted":      submitted_count,
+            "accepted":       accepted_count,
+            "saved":          len(saved),
+            "missing_docs":   list({"cv", "releve", "cni", "attestation"} - doc_types),
+        },
+    }
