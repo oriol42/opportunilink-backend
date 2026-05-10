@@ -110,3 +110,50 @@ def get_my_score(current_user: User = Depends(get_current_user)):
             else f"Complète ton profil pour booster ton score. Manquant : {', '.join(missing[:3])}"
         ),
     }
+
+# GET /users/me/stats — Statistiques personnelles complètes
+
+@router.get("/me/stats")
+def get_my_stats(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Retourne les statistiques complètes de l'utilisateur :
+    candidatures par statut, favoris, documents, score profil.
+    """
+    from app.models.application import Application
+    from app.models.document import Document
+    from app.models.saved import SavedOpportunity
+
+    apps = db.query(Application).filter(Application.user_id == current_user.id).all()
+    docs = db.query(Document).filter(Document.user_id == current_user.id).all()
+    saved = db.query(SavedOpportunity).filter(SavedOpportunity.user_id == current_user.id).count()
+
+    profile_fields = [
+        current_user.level, current_user.field, current_user.city,
+        current_user.gpa, current_user.phone,
+        current_user.languages if current_user.languages else None,
+        current_user.skills if current_user.skills else None,
+    ]
+    profile_pct = round(sum(1 for f in profile_fields if f) / len(profile_fields) * 100)
+
+    doc_types = {d.type for d in docs}
+    essential = {"cv", "releve", "cni", "attestation"}
+    doc_pct = round(len(doc_types & essential) / len(essential) * 100)
+
+    return {
+        "applications": {
+            "total":     len(apps),
+            "draft":     sum(1 for a in apps if a.status == "draft"),
+            "submitted": sum(1 for a in apps if a.status == "submitted"),
+            "accepted":  sum(1 for a in apps if a.status == "accepted"),
+            "rejected":  sum(1 for a in apps if a.status == "rejected"),
+        },
+        "saved_count":       saved,
+        "documents_count":   len(docs),
+        "document_pct":      doc_pct,
+        "profile_pct":       profile_pct,
+        "opportuni_score":   current_user.opportuni_score,
+        "member_since":      current_user.created_at.strftime("%B %Y"),
+    }

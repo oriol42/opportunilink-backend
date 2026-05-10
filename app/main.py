@@ -8,9 +8,8 @@ import time
 import logging
 
 from app.config import settings
-from app.database import engine, Base
 from app.core.limiter import limiter
-from app.routes import auth, users, opportunities, applications, documents, ai_coach
+from app.routes import auth, users, opportunities, applications, documents, ai_coach, organizations
 
 logging.basicConfig(
     level=logging.DEBUG if not settings.is_production else logging.WARNING,
@@ -26,7 +25,6 @@ app = FastAPI(
     redoc_url="/redoc" if not settings.is_production else None,
 )
 
-# Rate limiter state
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
@@ -40,12 +38,17 @@ app.add_middleware(
 )
 
 @app.middleware("http")
-async def add_process_time_header(request: Request, call_next):
-    start_time = time.time()
+async def security_and_timing(request: Request, call_next):
+    start = time.time()
     response = await call_next(request)
-    process_time = round((time.time() - start_time) * 1000, 2)
-    response.headers["X-Process-Time"] = f"{process_time}ms"
-    logger.debug(f"{request.method} {request.url.path} — {process_time}ms")
+    ms = round((time.time() - start) * 1000, 2)
+    response.headers["X-Process-Time"]          = f"{ms}ms"
+    response.headers["X-Content-Type-Options"]  = "nosniff"
+    response.headers["X-Frame-Options"]         = "DENY"
+    response.headers["Referrer-Policy"]         = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"]      = "geolocation=(), microphone=(), camera=()"
+    if settings.is_production:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
 @app.exception_handler(Exception)
@@ -58,11 +61,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info(f"OpportuLink API starting — {settings.environment}")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info("OpportuLink API shutting down...")
+    logger.info(f"OpportuLink API v2.0.0 — {settings.environment}")
 
 @app.get("/health", tags=["System"])
 async def health_check():
@@ -70,7 +69,7 @@ async def health_check():
 
 @app.get("/", tags=["System"])
 async def root():
-    return {"message": "Welcome to OpportuLink API", "docs": "/docs"}
+    return {"message": "OpportuLink API v2.0.0", "docs": "/docs"}
 
 app.include_router(auth.router,          prefix="/api/v1/auth",          tags=["Auth"])
 app.include_router(users.router,         prefix="/api/v1/users",         tags=["Users"])
@@ -78,3 +77,4 @@ app.include_router(opportunities.router, prefix="/api/v1/opportunities", tags=["
 app.include_router(applications.router,  prefix="/api/v1/applications",  tags=["Applications"])
 app.include_router(documents.router,     prefix="/api/v1/documents",     tags=["Documents"])
 app.include_router(ai_coach.router,      prefix="/api/v1/ai",            tags=["AI Coach"])
+app.include_router(organizations.router, prefix="/api/v1/org",           tags=["Organizations"])

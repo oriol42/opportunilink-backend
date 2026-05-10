@@ -1,0 +1,231 @@
+# app/routes/organizations.py
+# B2B module — organisations publish and manage their opportunities.
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from typing import Optional
+from datetime import date
+import uuid
+
+from app.database import get_db
+from app.models.user import User
+from app.models.organization import Organization
+from app.models.opportunity import Opportunity
+from app.models.application import Application
+from app.schemas.opportunity import OpportunityCreate, OpportunityResponse
+from app.core.dependencies import get_current_user
+from app.services.cache import cache_delete_pattern
+
+router = APIRouter()
+
+
+# ── Schemas B2B ───────────────────────────────────────────────────
+
+class OrgCreate(BaseModel):
+    name: str
+    type: Optional[str] = None       # université/entreprise/ong/ambassade
+    domain: Optional[str] = None     # email officiel ex: mtn.cm
+    website: Optional[str] = None
+
+
+class OrgResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    type: Optional[str]
+    domain: Optional[str]
+    website: Optional[str]
+    is_verified: bool
+    plan: str
+    model_config = {"from_attributes": True}
+
+
+class OrgOpportunityCreate(OpportunityCreate):
+    """Même schema qu'OpportunityCreate mais lie l'org automatiquement."""
+    pass
+
+
+class AnalyticsResponse(BaseModel):
+    total_opportunities: int
+    active_opportunities: int
+    total_applications: int
+    applications_by_status: dict
+    top_opportunity: Optional[str]
+
+
+# ── POST /org/register — Créer une organisation ───────────────────
+
+@router.post("/register", response_model=OrgResponse, status_code=201)
+def register_organization(
+    data: OrgCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Enregistre une nouvelle organisation.
+    L'utilisateur connecté devient le gestionnaire de l'organisation.
+    """
+    org = Organization(
+        name=data.name,
+        type=data.type,
+        domain=data.domain,
+        website=data.website,
+        is_verified=False,
+        plan="free",
+    )
+    db.add(org)
+    db.commit()
+    db.refresh(org)
+    return org
+
+
+# ── GET /org/me — Mon organisation ───────────────────────────────
+
+@router.get("/me", response_model=OrgResponse)
+def get_my_organization(
+    org_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return org
+
+
+# ── POST /org/opportunities — Publier une opportunité ─────────────
+
+@router.post("/opportunities", response_model=OpportunityResponse, status_code=201)
+def publish_opportunity(
+    data: OrgOpportunityCreate,
+    org_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Publie une opportunité au nom d'une organisation.
+    La deadline doit être dans le futur.
+    """
+    org = db.query(Organization).filter(Organization.id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    if data.deadline and data.deadline < date.today():
+        raise HTTPException(status_code=400, detail="Deadline must be in the future")
+
+    opp = Opportunity(
+        **data.model_dump(),
+        organization_id=org_id,
+        is_scraped=False,
+        is_active=True,
+        reliability_score=80,  # Orgs vérifiées → score fiabilité élevé
+    )
+    db.add(opp)
+    db.commit()
+    db.refresh(opp)
+
+    # Invalider le cache feed — nouvelle opport. pour tout le monde
+    cache_delete_pattern("feed:user:*")
+
+    # Créer les alertes pour les users éligibles
+    try:
+        from app.tasks.alert_tasks import create_alerts_for_opportunity
+        create_alerts_for_opportunity.delay(str(opp.id))
+    except Exception:
+        pass
+
+    return opp
+
+
+# ── GET /org/opportunities — Mes opportunités publiées ───────────
+
+@router.get("/opportunities", response_model=list[OpportunityResponse])
+def get_org_opportunities(
+    org_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    opps = db.query(Opportunity).filter(
+        Opportunity.organization_id == org_id,
+    ).order_by(Opportunity.created_at.desc()).all()
+    return opps
+
+
+# ── GET /org/analytics — Dashboard stats ─────────────────────────
+
+@router.get("/analytics", response_model=AnalyticsResponse)
+def get_org_analytics(
+    org_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Stats pour le dashboard B2B :
+    - Nombre d'opportunités publiées
+    - Nombre de candidatures reçues
+    - Répartition par statut
+    - Opportunité la plus populaire
+    """
+    opps = db.query(Opportunity).filter(
+        Opportunity.organization_id == org_id
+    ).all()
+
+    opp_ids = [o.id for o in opps]
+    active = sum(1 for o in opps if o.is_active)
+
+    all_apps = []
+    if opp_ids:
+        all_apps = db.query(Application).filter(
+            Application.opportunity_id.in_(opp_ids)
+        ).all()
+
+    by_status = {
+        "draft":     sum(1 for a in all_apps if a.status == "draft"),
+        "submitted": sum(1 for a in all_apps if a.status == "submitted"),
+        "accepted":  sum(1 for a in all_apps if a.status == "accepted"),
+        "rejected":  sum(1 for a in all_apps if a.status == "rejected"),
+    }
+
+    # Opportunité avec le plus de candidatures
+    top_opp = None
+    if opp_ids:
+        from sqlalchemy import func
+        top = (
+            db.query(Opportunity.title, func.count(Application.id).label("cnt"))
+            .join(Application, Application.opportunity_id == Opportunity.id, isouter=True)
+            .filter(Opportunity.organization_id == org_id)
+            .group_by(Opportunity.title)
+            .order_by(func.count(Application.id).desc())
+            .first()
+        )
+        if top:
+            top_opp = top[0]
+
+    return AnalyticsResponse(
+        total_opportunities=len(opps),
+        active_opportunities=active,
+        total_applications=len(all_apps),
+        applications_by_status=by_status,
+        top_opportunity=top_opp,
+    )
+
+
+# ── DELETE /org/opportunities/{id} — Retirer une opportunité ──────
+
+@router.delete("/opportunities/{opportunity_id}", status_code=204)
+def deactivate_opportunity(
+    org_id: uuid.UUID,
+    opportunity_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    opp = db.query(Opportunity).filter(
+        Opportunity.id == opportunity_id,
+        Opportunity.organization_id == org_id,
+    ).first()
+    if not opp:
+        raise HTTPException(status_code=404, detail="Opportunity not found")
+
+    opp.is_active = False
+    db.commit()
+    cache_delete_pattern("feed:user:*")
