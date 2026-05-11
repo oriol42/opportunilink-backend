@@ -16,6 +16,10 @@ from app.services.cache import cache_get, cache_set, cache_delete_pattern
 
 router = APIRouter()
 
+# ────────────────────────────────────────────────────────────
+# IMPORTANT: routes statiques AVANT routes dynamiques ({id})
+# FastAPI matche dans l'ordre — "saved" doit venir avant /{id}
+# ────────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[OpportunityFeedItem])
 def get_feed(
@@ -33,40 +37,29 @@ def get_feed(
         f":type:{type}:country:{country}:search:{search}"
     )
     cached = cache_get(cache_key)
-    if cached is not None:
+    if cached:
         return cached
 
     query = db.query(Opportunity).filter(Opportunity.is_active == True)
-    if type:
-        query = query.filter(Opportunity.type == type)
-    if country:
-        query = query.filter(Opportunity.country.ilike(country))
-    if search:
-        query = query.filter(Opportunity.title.ilike(f"%{search}%"))
+    if type:    query = query.filter(Opportunity.type == type)
+    if country: query = query.filter(Opportunity.country.ilike(country))
+    if search:  query = query.filter(Opportunity.title.ilike(f"%{search}%"))
 
-    opportunities = query.all()
-
-    # On passe db pour que l'historique soit pris en compte
     ranked = build_personalized_feed(
-        user=current_user,
-        opportunities=opportunities,
-        page=page,
-        limit=limit,
-        db=db,
+        user=current_user, opportunities=query.all(),
+        page=page, limit=limit, db=db,
     )
-
     result = []
     for opp, score in ranked:
         item = OpportunityFeedItem.model_validate(opp)
         item.relevance_score = score
         result.append(item)
 
-    serialized = [i.model_dump(mode="json") for i in result]
-    cache_set(cache_key, serialized, ttl_seconds=300)
+    cache_set(cache_key, [i.model_dump(mode="json") for i in result], ttl_seconds=300)
     return result
 
 
-# IMPORTANT: /saved AVANT /{opportunity_id}
+# ── ROUTE STATIQUE: /saved (DOIT être avant /{opportunity_id}) ──
 @router.get("/saved", response_model=list[OpportunityFeedItem])
 def get_saved_opportunities(
     current_user: User = Depends(get_current_user),
@@ -75,16 +68,17 @@ def get_saved_opportunities(
     saved = db.query(SavedOpportunity).filter(
         SavedOpportunity.user_id == current_user.id
     ).all()
-    opp_ids = [s.opportunity_id for s in saved]
-    if not opp_ids:
+    if not saved:
         return []
+    opp_ids = [s.opportunity_id for s in saved]
     opps = db.query(Opportunity).filter(
         Opportunity.id.in_(opp_ids),
         Opportunity.is_active == True,
     ).all()
-    return [OpportunityFeedItem.model_validate(opp) for opp in opps]
+    return [OpportunityFeedItem.model_validate(o) for o in opps]
 
 
+# ── ROUTES DYNAMIQUES (après les routes statiques) ──────────────
 @router.get("/{opportunity_id}", response_model=OpportunityResponse)
 def get_opportunity(
     opportunity_id: uuid.UUID,
@@ -113,7 +107,7 @@ def get_prep_score(
 
 
 @router.post("/{opportunity_id}/save", status_code=status.HTTP_200_OK)
-def toggle_save_opportunity(
+def toggle_save(
     opportunity_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -153,9 +147,8 @@ def create_opportunity(
     try:
         from app.tasks.alert_tasks import create_alerts_for_opportunity
         create_alerts_for_opportunity.delay(str(opp.id))
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Alert task failed: {e}")
+    except Exception:
+        pass
     return opp
 
 
@@ -172,4 +165,4 @@ def report_opportunity(
         raise HTTPException(status_code=404, detail="Opportunity not found")
     db.add(Report(opportunity_id=opportunity_id, reported_by=current_user.id, reason=reason))
     db.commit()
-    return {"message": "Signalement soumis. Merci."}
+    return {"message": "Signalement soumis."}
