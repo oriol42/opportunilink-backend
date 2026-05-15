@@ -16,10 +16,9 @@ from app.services.cache import cache_get, cache_set, cache_delete_pattern
 
 router = APIRouter()
 
-# ────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 # IMPORTANT: routes statiques AVANT routes dynamiques ({id})
-# FastAPI matche dans l'ordre — "saved" doit venir avant /{id}
-# ────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[OpportunityFeedItem])
 def get_feed(
@@ -41,14 +40,21 @@ def get_feed(
         return cached
 
     query = db.query(Opportunity).filter(Opportunity.is_active == True)
-    if type:    query = query.filter(Opportunity.type == type)
-    if country: query = query.filter(Opportunity.country.ilike(country))
-    if search:  query = query.filter(Opportunity.title.ilike(f"%{search}%"))
+    if type:
+        query = query.filter(Opportunity.type == type)
+    if country:
+        query = query.filter(Opportunity.country.ilike(country))
+    if search:
+        query = query.filter(Opportunity.title.ilike(f"%{search}%"))
 
     ranked = build_personalized_feed(
-        user=current_user, opportunities=query.all(),
-        page=page, limit=limit, db=db,
+        user=current_user,
+        opportunities=query.all(),
+        page=page,
+        limit=limit,
+        db=db,
     )
+
     result = []
     for opp, score in ranked:
         item = OpportunityFeedItem.model_validate(opp)
@@ -59,26 +65,41 @@ def get_feed(
     return result
 
 
-# ── ROUTE STATIQUE: /saved (DOIT être avant /{opportunity_id}) ──
+# ── ROUTE STATIQUE: /saved — DOIT être AVANT /{opportunity_id} ──
 @router.get("/saved", response_model=list[OpportunityFeedItem])
 def get_saved_opportunities(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """
+    Retourne toutes les opportunités sauvegardées par l'utilisateur.
+    Importante: route statique avant /{id} pour éviter le conflit de routing FastAPI.
+    """
     saved = db.query(SavedOpportunity).filter(
         SavedOpportunity.user_id == current_user.id
     ).all()
+
     if not saved:
         return []
+
     opp_ids = [s.opportunity_id for s in saved]
     opps = db.query(Opportunity).filter(
         Opportunity.id.in_(opp_ids),
         Opportunity.is_active == True,
     ).all()
-    return [OpportunityFeedItem.model_validate(o) for o in opps]
+
+    # Ajouter un relevance_score neutre pour les favoris
+    result = []
+    for opp in opps:
+        item = OpportunityFeedItem.model_validate(opp)
+        item.relevance_score = None
+        result.append(item)
+
+    return result
 
 
-# ── ROUTES DYNAMIQUES (après les routes statiques) ──────────────
+# ── ROUTES DYNAMIQUES (après les routes statiques) ───────────────
+
 @router.get("/{opportunity_id}", response_model=OpportunityResponse)
 def get_opportunity(
     opportunity_id: uuid.UUID,
@@ -112,25 +133,47 @@ def toggle_save(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """
+    Toggle save/unsave d'une opportunité.
+    Si déjà sauvegardée → retire des favoris.
+    Si pas sauvegardée → ajoute aux favoris.
+    Retourne {"saved": bool} pour que le frontend mette à jour l'UI.
+    """
+    # Chercher si déjà sauvegardé
     existing = db.query(SavedOpportunity).filter(
         SavedOpportunity.user_id == current_user.id,
         SavedOpportunity.opportunity_id == opportunity_id,
     ).first()
+
     if existing:
+        # Déjà sauvegardé → on retire
         db.delete(existing)
         db.commit()
         cache_delete_pattern(f"feed:user:{current_user.id}*")
-        return {"saved": False}
-    opp = db.query(Opportunity).filter(Opportunity.id == opportunity_id).first()
+        return {"saved": False, "message": "Retiré des favoris"}
+
+    # Pas encore sauvegardé → vérifier que l'opportunité existe
+    opp = db.query(Opportunity).filter(
+        Opportunity.id == opportunity_id,
+        Opportunity.is_active == True,
+    ).first()
     if not opp:
         raise HTTPException(status_code=404, detail="Opportunity not found")
+
+    # Ajouter aux favoris
     try:
-        db.add(SavedOpportunity(user_id=current_user.id, opportunity_id=opportunity_id))
+        saved = SavedOpportunity(
+            user_id=current_user.id,
+            opportunity_id=opportunity_id,
+        )
+        db.add(saved)
         db.commit()
         cache_delete_pattern(f"feed:user:{current_user.id}*")
+        return {"saved": True, "message": "Ajouté aux favoris"}
     except IntegrityError:
+        # Race condition — déjà sauvegardé entre la vérification et l'insert
         db.rollback()
-    return {"saved": True}
+        return {"saved": True, "message": "Déjà sauvegardé"}
 
 
 @router.post("", response_model=OpportunityResponse, status_code=status.HTTP_201_CREATED)
@@ -163,6 +206,10 @@ def report_opportunity(
     opp = db.query(Opportunity).filter(Opportunity.id == opportunity_id).first()
     if not opp:
         raise HTTPException(status_code=404, detail="Opportunity not found")
-    db.add(Report(opportunity_id=opportunity_id, reported_by=current_user.id, reason=reason))
+    db.add(Report(
+        opportunity_id=opportunity_id,
+        reported_by=current_user.id,
+        reason=reason,
+    ))
     db.commit()
     return {"message": "Signalement soumis."}

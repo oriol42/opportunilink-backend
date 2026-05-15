@@ -106,6 +106,46 @@ def _build_cv_prompt(user, opp):
     )
 
 
+def _build_coach_system_prompt(user: User) -> str:
+    """
+    System prompt contextualisé avec le profil de l'utilisateur.
+    Le coach connaît l'utilisateur et adapte ses conseils.
+    """
+    user_skills = ", ".join(user.skills) if user.skills else "non précisées"
+    user_languages = ", ".join(
+        LANGUAGE_NAMES.get(lang, lang) for lang in (user.languages or [])
+    ) or "non précisées"
+
+    return (
+        "Tu es un coach de carrière expert, spécialisé dans l'accompagnement des étudiants "
+        "camerounais et africains vers des opportunités internationales.\n\n"
+        "Tu connais parfaitement :\n"
+        "- Les bourses DAAD, Erasmus+, Campus France, AUF, MasterCard Foundation\n"
+        "- Les stages et emplois dans les entreprises au Cameroun (MTN, Orange, Dangote...)\n"
+        "- Les organismes internationaux (ONU, UNICEF, Banque Mondiale...)\n"
+        "- La rédaction de lettres de motivation compétitives\n"
+        "- L'optimisation de CV pour candidatures internationales\n"
+        "- Les procédures de visa et démarches administratives\n\n"
+        f"=== PROFIL DE L'ÉTUDIANT ===\n"
+        f"Nom : {user.full_name}\n"
+        f"Niveau : {user.level or 'non renseigné'}\n"
+        f"Filière : {user.field or 'non renseignée'}\n"
+        f"Ville : {user.city or 'Cameroun'}\n"
+        f"Moyenne : {str(user.gpa) + '/20' if user.gpa else 'non renseignée'}\n"
+        f"Compétences : {user_skills}\n"
+        f"Langues : {user_languages}\n\n"
+        "=== INSTRUCTIONS ===\n"
+        "1. Réponds en français, de façon chaleureuse et encourageante.\n"
+        "2. Utilise le profil de l'étudiant pour personnaliser tes conseils.\n"
+        "3. Sois concret et actionnable : donne des étapes précises.\n"
+        "4. Si tu parles de bourses ou opportunités, précise les deadlines si tu les connais.\n"
+        "5. Maximum 3-4 paragraphes par réponse. Pas de listes à rallonge.\n"
+        "6. Tu PEUX suggérer des opportunités spécifiques basées sur le profil.\n"
+        "7. Reste honnête : si une opportunité semble difficile, dis-le avec tact.\n"
+        "8. Ne génère JAMAIS de fausses informations sur des programmes inexistants."
+    )
+
+
 def generate_motivation_letter(user: User, opp: Opportunity) -> str:
     client = _get_client()
     prompt = _build_letter_prompt(user, opp)
@@ -122,10 +162,6 @@ def generate_motivation_letter(user: User, opp: Opportunity) -> str:
 
 
 def generate_cv_advice(user: User, opp: Opportunity) -> dict:
-    """
-    Returns a structured dict with CV optimization advice.
-    Uses JSON mode via prompt instruction.
-    """
     import json
     client = _get_client()
     prompt = _build_cv_prompt(user, opp)
@@ -139,6 +175,33 @@ def generate_cv_advice(user: User, opp: Opportunity) -> dict:
         max_tokens=800,
     )
     raw = completion.choices[0].message.content.strip()
-    # Strip markdown code fences if model adds them anyway
     raw = raw.replace("```json", "").replace("```", "").strip()
     return json.loads(raw)
+
+
+def chat_with_coach(user: User, message: str, history: list[dict]) -> str:
+    """
+    Conversation avec le coach IA.
+    Contexte : profil utilisateur + historique de la conversation.
+    """
+    client = _get_client()
+    system_prompt = _build_coach_system_prompt(user)
+
+    # Construire les messages : system + historique + message actuel
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # Ajouter l'historique (max 10 derniers messages pour rester dans les tokens)
+    for msg in history[-10:]:
+        if msg.get("role") in ("user", "assistant") and msg.get("content"):
+            messages.append({"role": msg["role"], "content": msg["content"]})
+
+    # Ajouter le message actuel
+    messages.append({"role": "user", "content": message})
+
+    completion = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=messages,
+        temperature=0.7,
+        max_tokens=800,
+    )
+    return completion.choices[0].message.content.strip()

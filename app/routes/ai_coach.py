@@ -1,3 +1,4 @@
+# app/routes/ai_coach.py — VERSION COMPLÈTE avec /chat
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -8,7 +9,7 @@ from app.database import get_db
 from app.models.user import User
 from app.models.opportunity import Opportunity
 from app.core.dependencies import get_current_user
-from app.services.ai_coach import generate_motivation_letter, generate_cv_advice
+from app.services.ai_coach import generate_motivation_letter, generate_cv_advice, chat_with_coach
 
 router = APIRouter()
 
@@ -30,6 +31,20 @@ class CVAdviceResponse(BaseModel):
     points_a_valoriser: list[str]
     conseils: list[str]
     opportunity_title: str
+
+
+class ChatMessage(BaseModel):
+    role: str   # "user" ou "assistant"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: list[ChatMessage] = []
+
+
+class ChatResponse(BaseModel):
+    reply: str
 
 
 # POST /ai/generate-letter
@@ -69,10 +84,6 @@ def generate_cv(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Generates CV optimization advice tailored to the user's profile
-    and the target opportunity. Returns structured JSON advice.
-    """
     opp = db.query(Opportunity).filter(
         Opportunity.id == data.opportunity_id,
         Opportunity.is_active == True,
@@ -91,3 +102,29 @@ def generate_cv(
         opportunity_title=opp.title,
         **advice,
     )
+
+
+# POST /ai/chat — Nouveau endpoint manquant !
+
+@router.post("/chat", response_model=ChatResponse)
+def chat(
+    data: ChatRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Coach IA conversationnel.
+    Reçoit un message + l'historique de la conversation.
+    Retourne une réponse contextualisée avec le profil de l'utilisateur.
+    """
+    try:
+        reply = chat_with_coach(
+            user=current_user,
+            message=data.message,
+            history=[{"role": m.role, "content": m.content} for m in data.history],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AI service error: {str(e)}")
+
+    return ChatResponse(reply=reply)
