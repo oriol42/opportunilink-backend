@@ -69,6 +69,10 @@ def update_my_profile(
     db.commit()
     db.refresh(current_user)
 
+    # Invalider le cache feed — le profil a change, les scores changent
+    from app.services.cache import cache_delete_pattern
+    cache_delete_pattern(f"feed:user:{current_user.id}*")
+
     return current_user
 
 
