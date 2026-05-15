@@ -1,11 +1,15 @@
 # app/services/scoring.py
-# Score de préparation — analyse RÉELLE de l'opportunité + profil étudiant
-# Utilise l'IA (Groq) pour extraire les vrais critères de l'opportunité
+# Score de preparation — montre a l etudiant ce qu il lui manque
+# NOUVEAU : extraction IA des vrais documents requis depuis la description
 
+import json
+import logging
 from sqlalchemy.orm import Session
 from app.models.user import User
 from app.models.opportunity import Opportunity
 from app.models.document import Document
+
+logger = logging.getLogger(__name__)
 
 
 def has_document(db: Session, user_id, doc_type: str) -> bool:
@@ -17,361 +21,253 @@ def has_document(db: Session, user_id, doc_type: str) -> bool:
     return doc is not None
 
 
-def analyze_opportunity_requirements(opp: Opportunity) -> dict:
+def extract_requirements_from_description(opp: Opportunity) -> dict:
     """
-    Analyse l'opportunité pour extraire LES VRAIS critères nécessaires.
-    Combine les données structurées (required_level, min_gpa...)
-    avec une analyse du texte de description.
-    Retourne un dict avec tous les critères détectés.
+    Utilise Groq/Llama pour extraire depuis la description :
+    - Les documents vraiment requis
+    - Les competences cles demandees
+    - Les tests de langue requis (TOEFL, DELF...)
+    - Les criteres specifiques
+
+    On stocke le resultat dans opp.required_docs (JSONB) pour
+    ne pas rappeler l IA a chaque fois.
     """
-    description = (opp.description or "").lower()
-    title = (opp.title or "").lower()
-    full_text = title + " " + description
+    # Si deja extrait et stocke en DB, on reutilise
+    if opp.required_docs and opp.required_docs.get("ai_extracted"):
+        return opp.required_docs
 
-    # Détection langues dans la description
-    detected_languages = []
-    if opp.required_languages:
-        detected_languages = opp.required_languages
-    else:
-        if any(w in full_text for w in ["english", "anglais", "toefl", "ielts"]):
-            detected_languages.append("en")
-        if any(w in full_text for w in ["français", "french", "delf", "dalf", "tcf"]):
-            detected_languages.append("fr")
-        if any(w in full_text for w in ["german", "deutsch", "allemand", "goethe"]):
-            detected_languages.append("de")
-        if not detected_languages:
-            detected_languages = ["en"]  # défaut
+    # Si pas de description, retourner des defaults
+    if not opp.description or len(opp.description) < 50:
+        return {
+            "ai_extracted": False,
+            "required_docs": ["cv", "releve"],
+            "key_skills": [],
+            "lang_tests": [],
+            "specific_criteria": [],
+        }
 
-    # Détection tests de langue requis
-    lang_tests = []
-    if any(w in full_text for w in ["toefl", "ielts", "gre", "gmat", "delf", "dalf", "tcf", "testdaf"]):
-        if "toefl" in full_text: lang_tests.append("TOEFL")
-        if "ielts" in full_text: lang_tests.append("IELTS")
-        if "gre" in full_text: lang_tests.append("GRE")
-        if "gmat" in full_text: lang_tests.append("GMAT")
-        if any(w in full_text for w in ["delf","dalf","tcf"]): lang_tests.append("DELF/DALF")
-        if "testdaf" in full_text: lang_tests.append("TestDaF")
+    try:
+        from app.config import settings
+        if not settings.groq_api_key:
+            raise ValueError("No Groq key")
 
-    # Détection niveau requis
-    required_levels = opp.required_level or []
-    if not required_levels:
-        if any(w in full_text for w in ["licence", "bachelor", "undergraduate", "bsc", "l3"]):
-            required_levels.append("Licence")
-        if any(w in full_text for w in ["master", "msc", "mba", "m2", "postgraduate"]):
-            required_levels.append("Master")
-        if any(w in full_text for w in ["phd", "doctorat", "doctoral", "thesis", "thèse"]):
-            required_levels.append("Doctorat")
+        import httpx
+        from groq import Groq
 
-    # Détection documents souvent requis selon le type
-    required_docs = []
-    if opp.type in ["bourse", "echange"]:
-        required_docs = ["CV", "Lettre de motivation", "Relevés de notes", "CNI/Passeport", "Lettre de recommandation"]
-        if any(w in full_text for w in ["projet de recherche", "research proposal", "research project"]):
-            required_docs.append("Projet de recherche")
-        if any(w in full_text for w in ["medical", "médical", "health certificate"]):
-            required_docs.append("Certificat médical")
-        if any(w in full_text for w in ["bank statement", "relevé bancaire", "financial"]):
-            required_docs.append("Relevé bancaire")
-    elif opp.type == "stage":
-        required_docs = ["CV", "Lettre de motivation", "Relevés de notes", "CNI"]
-    elif opp.type == "emploi":
-        required_docs = ["CV", "Lettre de motivation", "CNI"]
-    elif opp.type == "concours":
-        required_docs = ["CNI", "Relevés de notes", "Attestation d'inscription", "Photos d'identité"]
+        http_client = httpx.Client(
+            transport=httpx.HTTPTransport(local_address="0.0.0.0")
+        )
+        client = Groq(api_key=settings.groq_api_key, http_client=http_client)
 
-    # Compétences clés souvent requises selon le domaine
-    key_skills = []
-    if any(w in full_text for w in ["python", "programming", "coding", "développeur", "developer", "software"]):
-        key_skills.extend(["Python", "Git", "Algorithmique"])
-    if any(w in full_text for w in ["data", "machine learning", "ai", "intelligence artificielle", "data science"]):
-        key_skills.extend(["Python", "SQL", "Machine Learning", "Statistics"])
-    if any(w in full_text for w in ["web", "javascript", "react", "frontend", "backend"]):
-        key_skills.extend(["JavaScript", "HTML/CSS", "Framework web"])
-    if any(w in full_text for w in ["finance", "comptabilité", "audit", "accounting"]):
-        key_skills.extend(["Excel", "Analyse financière", "Comptabilité"])
-    if any(w in full_text for w in ["management", "gestion de projet", "project management"]):
-        key_skills.extend(["Gestion de projet", "Leadership", "Communication"])
-    if any(w in full_text for w in ["recherche", "research", "laboratory", "laboratoire"]):
-        key_skills.extend(["Méthodologie de recherche", "Rédaction académique"])
+        prompt = f"""Analyse cette description d opportunite et extrait les informations en JSON.
 
-    # GPA minimum
-    min_gpa = opp.min_gpa
-    if not min_gpa:
-        # Essayer de détecter dans la description
-        import re
-        gpa_patterns = [
-            r"moyenne.*?(\d+[.,]\d+)/20",
-            r"gpa.*?(\d+[.,]\d+)",
-            r"(\d+[.,]\d+)/20.*?minimum",
-        ]
-        for pat in gpa_patterns:
-            m = re.search(pat, full_text)
-            if m:
-                try:
-                    min_gpa = float(m.group(1).replace(",", "."))
-                    break
-                except:
-                    pass
+DESCRIPTION :
+{opp.description[:1500]}
 
-    return {
-        "required_levels": required_levels,
-        "required_languages": detected_languages,
-        "lang_tests": lang_tests,
-        "min_gpa": min_gpa,
-        "required_docs": required_docs,
-        "key_skills": list(set(key_skills)),
-        "country": opp.country,
-        "type": opp.type,
-    }
+TITRE : {opp.title}
+TYPE : {opp.type}
+PAYS : {opp.country or "non precise"}
+
+Reponds UNIQUEMENT avec ce JSON valide, sans backticks :
+{{
+  "ai_extracted": true,
+  "required_docs": ["liste des documents requis parmi : cv, releve, cni, lettre_motivation, lettre_recommandation, photo, diplome, attestation, portfolio, autre"],
+  "key_skills": ["competences techniques specifiquement mentionnees"],
+  "lang_tests": ["tests de langue requis ex: TOEFL, IELTS, DELF, DALF, TestDaF ou vide si aucun"],
+  "specific_criteria": ["criteres specifiques importants non couverts ailleurs"],
+  "min_age": null,
+  "max_age": null,
+  "requires_recommendation": true or false,
+  "requires_motivation_letter": true or false,
+  "application_method": "email ou formulaire_en_ligne ou courrier ou plateforme"
+}}"""
+
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "Tu es un expert en analyse d offres de bourses et stages. Reponds uniquement en JSON valide."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            max_tokens=500,
+        )
+
+        raw = completion.choices[0].message.content.strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        result = json.loads(raw)
+        logger.info(f"IA extraction OK pour {opp.id}: {result.get('required_docs')}")
+        return result
+
+    except Exception as e:
+        logger.warning(f"IA extraction failed pour {opp.id}: {e} — fallback defaults")
+        return {
+            "ai_extracted": False,
+            "required_docs": ["cv", "releve"],
+            "key_skills": [],
+            "lang_tests": [],
+            "specific_criteria": [],
+            "requires_recommendation": False,
+            "requires_motivation_letter": True,
+            "application_method": "formulaire_en_ligne",
+        }
 
 
-def get_learning_resources(skill: str, is_free: bool = True) -> list[dict]:
-    """Retourne des ressources d'apprentissage pour une compétence."""
-    resources_map = {
-        "Python": [
-            {"name": "Python.org (officiel)", "url": "https://docs.python.org/fr/3/tutorial/", "free": True, "duration": "2-4 semaines"},
-            {"name": "freeCodeCamp Python", "url": "https://www.freecodecamp.org/learn/scientific-computing-with-python/", "free": True, "duration": "3-6 semaines"},
-            {"name": "Coursera Python (Google)", "url": "https://www.coursera.org/learn/python-crash-course", "free": False, "duration": "6 semaines"},
-        ],
-        "English": [
-            {"name": "Duolingo", "url": "https://www.duolingo.com", "free": True, "duration": "Continu"},
-            {"name": "BBC Learning English", "url": "https://www.bbc.co.uk/learningenglish", "free": True, "duration": "Continu"},
-        ],
-        "IELTS": [
-            {"name": "IELTS.org (préparation officielle)", "url": "https://www.ielts.org/what-is-ielts/ielts-sample-test-questions", "free": True, "duration": "2-3 mois"},
-            {"name": "British Council IELTS Prep", "url": "https://www.britishcouncil.org/exam/ielts/ielts-preparation", "free": False, "duration": "2-3 mois"},
-        ],
-        "TOEFL": [
-            {"name": "ETS TOEFL Prep (officiel)", "url": "https://www.ets.org/toefl/test-takers/ibt/prepare.html", "free": True, "duration": "2-3 mois"},
-        ],
-        "Git": [
-            {"name": "Git - Documentation officielle", "url": "https://git-scm.com/doc", "free": True, "duration": "1 semaine"},
-            {"name": "GitHub Learning Lab", "url": "https://lab.github.com", "free": True, "duration": "1-2 semaines"},
-        ],
-        "SQL": [
-            {"name": "SQLZoo", "url": "https://sqlzoo.net", "free": True, "duration": "2-3 semaines"},
-            {"name": "Mode SQL Tutorial", "url": "https://mode.com/sql-tutorial/", "free": True, "duration": "2-4 semaines"},
-        ],
-        "Machine Learning": [
-            {"name": "Coursera ML (Andrew Ng)", "url": "https://www.coursera.org/learn/machine-learning", "free": False, "duration": "11 semaines"},
-            {"name": "fast.ai", "url": "https://www.fast.ai", "free": True, "duration": "8-12 semaines"},
-        ],
-        "Excel": [
-            {"name": "Microsoft Excel (cours officiel)", "url": "https://support.microsoft.com/fr-fr/excel", "free": True, "duration": "1-2 semaines"},
-            {"name": "GCFGlobal Excel", "url": "https://edu.gcfglobal.org/en/excel2016/", "free": True, "duration": "1 semaine"},
-        ],
-        "Gestion de projet": [
-            {"name": "Google Project Management (Coursera)", "url": "https://www.coursera.org/professional-certificates/google-project-management", "free": False, "duration": "6 mois"},
-            {"name": "PMI Resources (gratuit)", "url": "https://www.pmi.org/learning/library", "free": True, "duration": "Continu"},
-        ],
-        "Rédaction académique": [
-            {"name": "Coursera Academic Writing (Duke)", "url": "https://www.coursera.org/learn/academic-writing", "free": False, "duration": "4 semaines"},
-            {"name": "Purdue OWL", "url": "https://owl.purdue.edu/owl/purdue_owl.html", "free": True, "duration": "Continu"},
-        ],
-    }
-    return resources_map.get(skill, [
-        {"name": f"Rechercher '{skill}' sur Coursera", "url": f"https://www.coursera.org/search?query={skill.replace(' ', '+')}", "free": False, "duration": "Variable"},
-        {"name": f"Rechercher '{skill}' sur YouTube", "url": f"https://www.youtube.com/results?search_query={skill.replace(' ', '+')}", "free": True, "duration": "Variable"},
-    ])
+DOC_LABELS = {
+    "cv": "CV",
+    "releve": "Relevés de notes",
+    "cni": "CNI ou Passeport",
+    "lettre_motivation": "Lettre de motivation",
+    "lettre_recommandation": "Lettre de recommandation",
+    "photo": "Photo d identite",
+    "diplome": "Diplôme",
+    "attestation": "Attestation d inscription",
+    "portfolio": "Portfolio",
+    "autre": "Autre document",
+}
+
+DOC_FIX = {
+    "cv": "Uploade ton CV dans le coffre-fort Documents",
+    "releve": "Uploade tes relevés de notes dans le coffre-fort",
+    "cni": "Uploade ta CNI ou passeport dans le coffre-fort",
+    "lettre_motivation": "Génère ta lettre de motivation avec le Coach IA",
+    "lettre_recommandation": "Contacte un professeur ou superviseur pour une lettre",
+    "photo": "Uploade une photo d identite dans le coffre-fort",
+    "diplome": "Uploade une copie de ton diplôme dans le coffre-fort",
+    "attestation": "Uploade une attestation d inscription de ton université",
+    "portfolio": "Prépare un portfolio avec tes meilleurs travaux",
+    "autre": "Vérifie les documents requis sur le site officiel",
+}
 
 
 def compute_preparation_score(user: User, opp: Opportunity, db: Session) -> dict:
     """
-    Score de préparation INTELLIGENT.
-    Analyse vraiment l'opportunité et guide l'étudiant avec des actions concrètes.
+    Score de preparation INTELLIGENT :
+    1. Extrait les vrais criteres depuis la description (via IA)
+    2. Verifie chaque critere contre le profil et les documents
+    3. Retourne un rapport detaille avec quoi faire
     """
-    # 1. Analyser les vrais critères de l'opportunité
-    requirements = analyze_opportunity_requirements(opp)
-
+    requirements = extract_requirements_from_description(opp)
     checks = []
 
-    # ── Critères académiques ────────────────────────────────────────
-
-    # Niveau d'études
-    if requirements["required_levels"]:
-        ok = user.level in requirements["required_levels"]
-        checks.append({
-            "label": "Niveau d'études",
-            "ok": ok,
-            "fix": f"Niveau requis : {', '.join(requirements['required_levels'])}. Ton niveau actuel : {user.level or 'non renseigné'}",
-            "category": "academic",
-            "priority": 1,
-        })
-
-    # Moyenne
-    if requirements["min_gpa"]:
-        ok = bool(user.gpa and user.gpa >= requirements["min_gpa"])
-        checks.append({
-            "label": f"Moyenne ≥ {requirements['min_gpa']}/20",
-            "ok": ok,
-            "fix": f"Ta moyenne : {user.gpa or 'non renseignée'}/20. Minimum requis : {requirements['min_gpa']}/20",
-            "category": "academic",
-            "priority": 1,
-        })
-
-    # Langues
-    if requirements["required_languages"]:
-        user_langs = set(user.languages or [])
-        missing = set(requirements["required_languages"]) - user_langs
-        lang_names = {"fr":"Français","en":"Anglais","de":"Allemand","es":"Espagnol","ar":"Arabe"}
-        ok = len(missing) == 0
-        checks.append({
-            "label": "Langues requises",
-            "ok": ok,
-            "fix": f"Langues manquantes : {', '.join(lang_names.get(l,l) for l in missing)}" if missing else "",
-            "category": "academic",
-            "priority": 1,
-        })
-
-    # Tests de langue spécifiques
-    for test in requirements["lang_tests"]:
-        checks.append({
-            "label": f"Test {test} (souvent requis)",
-            "ok": False,  # On ne peut pas savoir si l'étudiant l'a passé
-            "fix": f"Ce type d'opportunité demande souvent le {test}. Vérifie les détails et prépare-toi.",
-            "category": "language_test",
-            "priority": 2,
-            "resources": get_learning_resources(test),
-        })
-
-    # Filière
-    if opp.required_fields:
-        ok = user.field in opp.required_fields
-        checks.append({
-            "label": "Filière compatible",
-            "ok": ok,
-            "fix": f"Filières acceptées : {', '.join(opp.required_fields)}. Ta filière : {user.field or 'non renseignée'}",
-            "category": "academic",
-            "priority": 1,
-        })
-
-    # ── Documents ───────────────────────────────────────────────────
-
-    doc_map = {
-        "CV": "cv",
-        "Relevés de notes": "releve",
-        "CNI/Passeport": "cni",
-        "CNI": "cni",
-        "Attestation d'inscription": "attestation",
-    }
-
-    for doc_label in requirements["required_docs"]:
-        doc_type = doc_map.get(doc_label)
-        if doc_type:
-            ok = has_document(db, user.id, doc_type)
-            checks.append({
-                "label": doc_label,
-                "ok": ok,
-                "fix": f"Upload ton {doc_label} dans le coffre-fort de documents",
-                "category": "document",
-                "priority": 2,
-            })
-        else:
-            # Document qu'on ne peut pas vérifier automatiquement
-            checks.append({
-                "label": doc_label,
-                "ok": False,
-                "fix": f"Ce document est souvent requis : {doc_label}. Vérifie auprès de l'organisme.",
-                "category": "document_external",
-                "priority": 3,
-            })
-
-    # ── Compétences clés ────────────────────────────────────────────
-
-    user_skills_lower = {s.lower() for s in (user.skills or [])}
-
-    for skill in requirements["key_skills"][:5]:  # Max 5 compétences
-        skill_lower = skill.lower()
-        ok = skill_lower in user_skills_lower or any(skill_lower in s for s in user_skills_lower)
-        checks.append({
-            "label": f"Compétence : {skill}",
-            "ok": ok,
-            "fix": f"'{skill}' est souvent requis pour ce type d'opportunité.",
-            "category": "skill",
-            "priority": 3,
-            "resources": get_learning_resources(skill),
-        })
-
-    # ── Profil de base ──────────────────────────────────────────────
-
+    # --- Criteres academiques ---
     checks.append({
-        "label": "Profil complété",
-        "ok": bool(user.level and user.field and user.gpa and user.city),
-        "fix": "Complete ton profil : niveau, filière, moyenne, ville",
-        "category": "profile",
-        "priority": 2,
+        "label": "Niveau d etudes",
+        "ok": not opp.required_level or user.level in opp.required_level,
+        "fix": f"Niveau requis : {', '.join(opp.required_level or [])}",
+        "category": "academic",
     })
 
-    # ── Calcul score ────────────────────────────────────────────────
+    if opp.min_gpa:
+        checks.append({
+            "label": "Moyenne suffisante",
+            "ok": bool(user.gpa and user.gpa >= opp.min_gpa),
+            "fix": f"Moyenne requise : {opp.min_gpa}/20 — ta moyenne : {user.gpa or 'non renseignee'}/20",
+            "category": "academic",
+        })
 
-    # Pondération : critères obligatoires pèsent plus
+    if opp.required_languages:
+        user_langs = set(user.languages or [])
+        missing_langs = set(opp.required_languages) - user_langs
+        lang_names = {"fr": "Français", "en": "Anglais", "de": "Allemand",
+                      "es": "Espagnol", "zh": "Chinois", "ar": "Arabe"}
+        missing_names = [lang_names.get(l, l) for l in missing_langs]
+        checks.append({
+            "label": "Langues requises",
+            "ok": len(missing_langs) == 0,
+            "fix": f"Langues manquantes : {', '.join(missing_names)}",
+            "category": "academic",
+        })
+
+    # Tests de langue (TOEFL, DELF...)
+    for test in requirements.get("lang_tests", []):
+        checks.append({
+            "label": f"Certificat {test}",
+            "ok": False,  # On ne peut pas verifier sans que l etudiant le renseigne
+            "fix": f"Ce programme demande un {test} — verifie si tu en as un",
+            "category": "academic",
+        })
+
+    if opp.required_fields:
+        checks.append({
+            "label": "Filiere compatible",
+            "ok": user.field in opp.required_fields,
+            "fix": f"Filieres acceptees : {', '.join(opp.required_fields)}",
+            "category": "academic",
+        })
+
+    # --- Documents vraiment requis ---
+    required_docs = requirements.get("required_docs", ["cv", "releve"])
+
+    # Toujours verifier CV et releve comme base
+    if "cv" not in required_docs:
+        required_docs = ["cv"] + required_docs
+    if "releve" not in required_docs:
+        required_docs = required_docs + ["releve"]
+
+    for doc_type in required_docs:
+        # Mapper les types IA vers les types coffre-fort
+        vault_type = doc_type
+        if doc_type == "lettre_motivation":
+            # On ne peut pas verifier une lettre generee dans le coffre fort
+            # mais on peut verifier si l etudiant a genere une lettre pour cette opp
+            checks.append({
+                "label": DOC_LABELS.get(doc_type, doc_type),
+                "ok": False,  # On indique qu il faut en generer une
+                "fix": DOC_FIX.get(doc_type, "Preparer ce document"),
+                "category": "document",
+            })
+            continue
+        if doc_type == "lettre_recommandation":
+            checks.append({
+                "label": DOC_LABELS.get(doc_type, doc_type),
+                "ok": False,
+                "fix": DOC_FIX.get(doc_type, "Preparer ce document"),
+                "category": "document",
+            })
+            continue
+
+        checks.append({
+            "label": DOC_LABELS.get(doc_type, doc_type),
+            "ok": has_document(db, user.id, vault_type),
+            "fix": DOC_FIX.get(doc_type, f"Uploade ce document dans le coffre-fort"),
+            "category": "document",
+        })
+
+    # --- Profil complet ---
+    checks.append({
+        "label": "Profil complet",
+        "ok": bool(user.level and user.field and user.gpa and user.city),
+        "fix": "Complete ton profil : niveau, filiere, moyenne, ville",
+        "category": "profile",
+    })
+
+    # Competences cles mentionnees dans la description
+    key_skills = requirements.get("key_skills", [])
+    if key_skills and user.skills:
+        user_skills_lower = [s.lower() for s in user.skills]
+        missing_skills = [s for s in key_skills[:3] if s.lower() not in user_skills_lower]
+        if missing_skills:
+            checks.append({
+                "label": f"Competences : {', '.join(missing_skills[:2])}",
+                "ok": False,
+                "fix": f"Ajoute ces competences a ton profil ou developpe-les",
+                "category": "skills",
+            })
+
+    # --- Calcul score ---
     ok_count = sum(1 for c in checks if c["ok"])
     total = len(checks)
     score = round((ok_count / total) * 100) if total > 0 else 0
-
     missing = [c for c in checks if not c["ok"]]
-    # Trier par priorité
-    missing.sort(key=lambda x: x.get("priority", 3))
 
-    # ── Plan d'action personnalisé ──────────────────────────────────
-
-    action_plan = []
-
-    # Étape 1 : Documents manquants (urgent, concret)
-    missing_docs = [m for m in missing if m["category"] == "document"]
-    if missing_docs:
-        action_plan.append({
-            "step": 1,
-            "title": "📁 Prépare tes documents",
-            "actions": [f"Uploade ton {m['label']}" for m in missing_docs],
-            "url": "/dashboard/documents",
-            "urgency": "high",
-        })
-
-    # Étape 2 : Profil et critères bloquants
-    blocking = [m for m in missing if m["category"] in ["academic", "profile"] and m.get("priority",3)==1]
-    if blocking:
-        action_plan.append({
-            "step": 2,
-            "title": "⚠️ Critères d'éligibilité",
-            "actions": [m["fix"] for m in blocking],
-            "url": "/dashboard/profile",
-            "urgency": "critical",
-        })
-
-    # Étape 3 : Compétences à développer
-    skill_gaps = [m for m in missing if m["category"] == "skill"]
-    if skill_gaps:
-        skill_resources = []
-        for sg in skill_gaps[:3]:
-            for r in sg.get("resources", [])[:2]:
-                skill_resources.append(f"{sg['label']} → {r['name']} ({'gratuit' if r['free'] else 'payant'}, {r['duration']})")
-        action_plan.append({
-            "step": 3,
-            "title": "📚 Compétences à développer",
-            "actions": skill_resources if skill_resources else [m["fix"] for m in skill_gaps],
-            "urgency": "medium",
-        })
-
-    # Étape 4 : Tests de langue
-    test_gaps = [m for m in missing if m["category"] == "language_test"]
-    if test_gaps:
-        action_plan.append({
-            "step": 4,
-            "title": "🌍 Tests de langue",
-            "actions": [m["fix"] for m in test_gaps],
-            "urgency": "medium",
-        })
-
-    # Message principal
     if score == 100:
-        message = "🎉 Ton dossier est complet ! Tu peux candidater dès maintenant."
-    elif score >= 75:
-        message = f"✅ Tu es prêt à {score}%. Quelques points à finaliser avant de postuler."
-    elif score >= 50:
-        message = f"⚡ Tu es à {score}% de préparation. Suis le plan d'action ci-dessous."
+        message = "Ton dossier est complet ! Tu peux candidater."
+    elif score >= 70:
+        missing_labels = ", ".join(m["label"] for m in missing[:2])
+        message = f"Tu es pret a {score}%. Il te manque : {missing_labels}"
     else:
-        message = f"⚠️ Tu es prêt à {score}%. Commence par les actions prioritaires."
+        missing_labels = ", ".join(m["label"] for m in missing[:3])
+        message = f"Priorite : {missing_labels}"
 
     return {
         "score": score,
@@ -380,8 +276,16 @@ def compute_preparation_score(user: User, opp: Opportunity, db: Session) -> dict
         "message": message,
         "ok_count": ok_count,
         "total_checks": total,
-        "action_plan": action_plan,
-        "requirements": requirements,
-        "opportunity_type": opp.type,
-        "opportunity_country": opp.country,
+        "requirements": {
+            "required_levels": opp.required_level or [],
+            "required_languages": opp.required_languages or [],
+            "lang_tests": requirements.get("lang_tests", []),
+            "min_gpa": opp.min_gpa,
+            "required_docs": requirements.get("required_docs", []),
+            "key_skills": requirements.get("key_skills", []),
+            "country": opp.country or "",
+            "type": opp.type,
+        },
+        "application_method": requirements.get("application_method", "formulaire_en_ligne"),
+        "requires_recommendation": requirements.get("requires_recommendation", False),
     }
