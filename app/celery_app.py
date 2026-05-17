@@ -27,17 +27,23 @@ celery_app.conf.update(
 
 celery_app.conf.beat_schedule = {
 
-    # ── Alertes ────────────────────────────────────────────────────
+    # ── Alertes ───────────────────────────────────────────────
     "send-deadline-alerts-daily": {
         "task": "app.tasks.alert_tasks.send_deadline_alerts",
         "schedule": crontab(hour=8, minute=0),
     },
 
-    # ── Crawlers existants ─────────────────────────────────────────
+    # ── Crawlers haute fréquence (2x/jour) ───────────────────
     "crawl-opportunity-desk-twice-daily": {
         "task": "crawl_opportunity_desk",
         "schedule": crontab(hour="6,18", minute=0),
     },
+    "crawl-reliefweb-twice-daily": {
+        "task": "crawl_reliefweb",
+        "schedule": crontab(hour="5,17", minute=30),
+    },
+
+    # ── Crawlers quotidiens ───────────────────────────────────
     "crawl-remotive-daily": {
         "task": "crawl_remotive",
         "schedule": crontab(hour=7, minute=0),
@@ -54,12 +60,6 @@ celery_app.conf.beat_schedule = {
         "task": "crawl_campus_france",
         "schedule": crontab(hour=9, minute=0),
     },
-
-    # ── Nouveaux crawlers ──────────────────────────────────────────
-    "crawl-reliefweb-twice-daily": {
-        "task": "crawl_reliefweb",
-        "schedule": crontab(hour="5,17", minute=30),   # 5h30 + 17h30
-    },
     "crawl-auf-daily": {
         "task": "crawl_auf",
         "schedule": crontab(hour=9, minute=30),
@@ -68,12 +68,38 @@ celery_app.conf.beat_schedule = {
         "task": "crawl_scholars4dev",
         "schedule": crontab(hour=10, minute=0),
     },
-    "crawl-mtn-cm-weekly": {
-        "task": "crawl_mtn_cm",
-        "schedule": crontab(hour=10, minute=30, day_of_week="1"),  # Lundi
-    },
     "crawl-euraxess-daily": {
         "task": "crawl_euraxess",
+        "schedule": crontab(hour=10, minute=30),
+    },
+    "crawl-un-jobs-daily": {
+        "task": "crawl_un_jobs",
         "schedule": crontab(hour=11, minute=0),
+    },
+    "crawl-world-bank-daily": {
+        "task": "crawl_world_bank_jobs",
+        "schedule": crontab(hour=11, minute=30),
+    },
+    "crawl-oms-afro-daily": {
+        "task": "crawl_oms_afro",
+        "schedule": crontab(hour=12, minute=0),
+    },
+    "crawl-ifj-journalism-daily": {
+        "task": "crawl_ifj_journalism",
+        "schedule": crontab(hour=12, minute=30),
+    },
+    "crawl-orange-fondation-daily": {
+        "task": "crawl_orange_fondation",
+        "schedule": crontab(hour=13, minute=0),
+    },
+
+    # ── Crawlers hebdomadaires ────────────────────────────────
+    "crawl-mtn-cm-weekly": {
+        "task": "crawl_mtn_cm",
+        "schedule": crontab(hour=10, minute=30, day_of_week="1"),
+    },
+    "crawl-minesup-weekly": {
+        "task": "crawl_minesup_cm",
+        "schedule": crontab(hour=14, minute=0, day_of_week="1,4"),
     },
 }
