@@ -61,54 +61,73 @@ def compute_reliability_score(opp: Opportunity) -> float:
     return float(opp.reliability_score or 50)
 
 
-def compute_history_score(user: User, opp: Opportunity, db=None) -> float:
-    if db is None:
+def load_user_history(user_id, db) -> dict:
+    """
+    Charge l historique utilisateur en 2 requetes SQL (au lieu de 6 par opportunite).
+    Retourne un dict reutilisable pour toutes les opportunites du feed.
+    """
+    from app.models.saved import SavedOpportunity
+    from app.models.application import Application
+
+    # Requete 1 : types des opportunites sauvegardees
+    saved_rows = db.query(Opportunity.type).join(
+        SavedOpportunity, SavedOpportunity.opportunity_id == Opportunity.id
+    ).filter(SavedOpportunity.user_id == user_id).all()
+    saved_types = {r[0] for r in saved_rows}
+
+    # Requete 2 : toutes les candidatures
+    apps = db.query(Application.opportunity_id, Application.status).filter(
+        Application.user_id == user_id
+    ).all()
+
+    app_opp_ids = [a[0] for a in apps]
+    accepted_opp_ids = [a[0] for a in apps if a[1] == "accepted"]
+    rejected_count = sum(1 for a in apps if a[1] == "rejected")
+
+    # Types des candidatures (1 requete si apps existent)
+    app_types: set = set()
+    accepted_types: set = set()
+    if app_opp_ids:
+        rows = db.query(Opportunity.type, Opportunity.id).filter(
+            Opportunity.id.in_(app_opp_ids)
+        ).all()
+        app_types = {r[0] for r in rows}
+        id_to_type = {r[1]: r[0] for r in rows}
+        accepted_types = {id_to_type[oid] for oid in accepted_opp_ids if oid in id_to_type}
+
+    return {
+        "saved_types": saved_types,
+        "app_types": app_types,
+        "accepted_types": accepted_types,
+        "rejected_count": rejected_count,
+    }
+
+
+def compute_history_score(user: User, opp: Opportunity, history: dict | None = None) -> float:
+    """
+    Calcule le score historique a partir du dict pre-charge par load_user_history.
+    Plus aucune requete DB ici — tout est deja en memoire.
+    """
+    if history is None:
         return 50.0
     score = 50.0
-    try:
-        from app.models.saved import SavedOpportunity
-        from app.models.application import Application
-        saved = db.query(SavedOpportunity).filter(
-            SavedOpportunity.user_id == user.id
-        ).all()
-        saved_opp_ids = [s.opportunity_id for s in saved]
-        if saved_opp_ids:
-            saved_types = db.query(Opportunity.type).filter(
-                Opportunity.id.in_(saved_opp_ids)
-            ).all()
-            if opp.type in [t[0] for t in saved_types]:
-                score += 15
-        apps = db.query(Application).filter(
-            Application.user_id == user.id
-        ).all()
-        if apps:
-            app_opp_ids = [a.opportunity_id for a in apps]
-            app_types = db.query(Opportunity.type).filter(
-                Opportunity.id.in_(app_opp_ids)
-            ).all()
-            if opp.type in [t[0] for t in app_types]:
-                score += 20
-            accepted_ids = [a.opportunity_id for a in apps if a.status == "accepted"]
-            if accepted_ids:
-                accepted_types = db.query(Opportunity.type).filter(
-                    Opportunity.id.in_(accepted_ids)
-                ).all()
-                if opp.type in [t[0] for t in accepted_types]:
-                    score += 15
-            rejected = [a for a in apps if a.status == "rejected"]
-            if len(rejected) > 3:
-                score -= 10
-    except Exception:
-        return 50.0
+    if opp.type in history["saved_types"]:
+        score += 15
+    if opp.type in history["app_types"]:
+        score += 20
+    if opp.type in history["accepted_types"]:
+        score += 15
+    if history["rejected_count"] > 3:
+        score -= 10
     return max(0.0, min(100.0, score))
 
 
-def compute_relevance_score(user: User, opp: Opportunity, db=None) -> float:
+def compute_relevance_score(user: User, opp: Opportunity, history: dict | None = None) -> float:
     e = compute_eligibility_score(user, opp)
     p = compute_profile_match_score(user, opp)
     u = compute_urgency_score(opp)
     r = compute_reliability_score(opp)
-    h = compute_history_score(user, opp, db)
+    h = compute_history_score(user, opp, history)
     return round((e * 0.40) + (p * 0.25) + (u * 0.15) + (r * 0.10) + (h * 0.10), 2)
 
 
@@ -148,11 +167,15 @@ def build_personalized_feed(
     min_score: float = 10.0,
     db=None,
 ) -> list:
+    # Charge l historique une seule fois pour toutes les opportunites
+    history = load_user_history(user.id, db) if db else None
+
+    today = date.today()
     scored = []
     for opp in opportunities:
-        if opp.deadline and (opp.deadline - date.today()).days < 0:
+        if opp.deadline and (opp.deadline - today).days < 0:
             continue
-        score = compute_relevance_score(user, opp, db)
+        score = compute_relevance_score(user, opp, history)
         if score >= min_score:
             scored.append((opp, score))
     scored.sort(key=lambda x: x[1], reverse=True)

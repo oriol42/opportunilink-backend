@@ -20,7 +20,7 @@ router = APIRouter()
 @router.get("", response_model=list[OpportunityFeedItem])
 def get_feed(
     page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=50),
+    limit: int = Query(20, ge=1, le=200),
     type: Optional[str] = Query(None),
     country: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
