@@ -78,3 +78,33 @@ app.include_router(applications.router,  prefix="/api/v1/applications",  tags=["
 app.include_router(documents.router,     prefix="/api/v1/documents",     tags=["Documents"])
 app.include_router(ai_coach.router,      prefix="/api/v1/ai",            tags=["AI Coach"])
 app.include_router(organizations.router, prefix="/api/v1/org",           tags=["Organizations"])
+
+
+# TEMPORARY MIGRATION ENDPOINT — DELETE AFTER USE
+@app.post("/admin/run-migration", tags=["Admin"])
+async def run_migration(request: Request):
+    secret = request.headers.get("X-Migration-Secret")
+    if secret != "opportulink-migrate-2026":
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+    
+    from app.database import engine
+    from sqlalchemy import text
+    results = []
+    
+    statements = [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS target_countries VARCHAR[]",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_types VARCHAR[]",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS objective TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS availability VARCHAR",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS experiences JSONB DEFAULT '[]'::jsonb",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS certifications JSONB DEFAULT '[]'::jsonb",
+    ]
+    
+    with engine.connect() as conn:
+        conn.execute(text("SET statement_timeout = 0"))
+        for sql in statements:
+            conn.execute(text(sql))
+            results.append(f"OK: {sql[:50]}")
+        conn.commit()
+    
+    return {"status": "done", "results": results}
