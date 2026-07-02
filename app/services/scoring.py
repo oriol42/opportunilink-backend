@@ -165,6 +165,19 @@ def compute_preparation_score(user: User, opp: Opportunity, db: Session) -> dict
             "category": "academic",
         })
 
+    if opp.min_age is not None or opp.max_age is not None:
+        age_ok = user.age is not None and \
+            (opp.min_age is None or user.age >= opp.min_age) and \
+            (opp.max_age is None or user.age <= opp.max_age)
+        borne = f"{opp.min_age or 0}-{opp.max_age or '∞'} ans"
+        checks.append({
+            "label": "Age requis",
+            "ok": age_ok,
+            "fix": f"Age requis : {borne} — renseigne ton age dans ton profil" if user.age is None
+                   else f"Age requis : {borne} — ton age : {user.age} ans",
+            "category": "academic",
+        })
+
     if opp.required_languages:
         user_langs = set(user.languages or [])
         missing_langs = set(opp.required_languages) - user_langs

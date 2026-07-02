@@ -19,6 +19,11 @@ def compute_eligibility_score(user: User, opp: Opportunity) -> float:
     if opp.min_gpa and user.gpa:
         if user.gpa < opp.min_gpa:
             score -= min((opp.min_gpa - user.gpa) * 15, 40)
+    if user.age is not None:
+        if opp.min_age is not None and user.age < opp.min_age:
+            score -= 50
+        if opp.max_age is not None and user.age > opp.max_age:
+            score -= 50
     return max(0.0, score)
 
 

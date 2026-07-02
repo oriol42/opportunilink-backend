@@ -15,6 +15,8 @@ class OpportunityBase(BaseModel):
     required_fields: list[str] = []
     required_languages: list[str] = []
     min_gpa: Optional[float] = None
+    min_age: Optional[int] = None
+    max_age: Optional[int] = None
     required_docs: dict = {}
 
 class OpportunityCreate(OpportunityBase):
@@ -43,6 +45,8 @@ class OpportunityFeedItem(BaseModel):
     required_fields: list[str] = []
     required_level: list[str] = []
     required_languages: list[str] = []
+    min_age: Optional[int] = None
+    max_age: Optional[int] = None
     # Scores calculés par le service
     relevance_score: Optional[float] = None
     prep_score: Optional[int] = None

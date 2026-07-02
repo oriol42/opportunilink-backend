@@ -66,26 +66,35 @@ def _build_letter_prompt(user, opp):
 def _build_cv_prompt(user, opp):
     user_skills = ", ".join(user.skills) if user.skills else "non précisées"
     user_languages = ", ".join(LANGUAGE_NAMES.get(l, l) for l in (user.languages or [])) or "non précisées"
+    age_line = f"Age : {user.age} ans\n" if user.age else ""
 
     return (
-        "Tu es un expert RH spécialisé pour les étudiants africains.\n\n"
+        "Tu es un expert RH spécialisé pour les étudiants africains. "
+        "Génère un CV COMPLET et prêt à l'emploi (pas des conseils, un vrai contenu de CV), "
+        "optimisé pour l'opportunité ciblée, en français, avec un ton professionnel et concret.\n\n"
         "=== PROFIL ===\n"
         f"Nom : {user.full_name}\n"
         f"Niveau : {user.level or 'non précisé'}\n"
         f"Filière : {user.field or 'non précisée'}\n"
         f"Ville : {user.city or 'Cameroun'}\n"
+        f"{age_line}"
         f"Moyenne : {str(user.gpa) + '/20' if user.gpa else 'non précisée'}\n"
         f"Compétences : {user_skills}\n"
         f"Langues : {user_languages}\n\n"
-        "=== OPPORTUNITÉ ===\n"
+        "=== OPPORTUNITÉ CIBLÉE ===\n"
         f"Titre : {opp.title}\n"
         f"Type : {OPPORTUNITY_TYPE_NAMES.get(opp.type, opp.type)}\n"
         f"Pays : {opp.country or 'non précisé'}\n"
         f"Description : {(opp.description or '')[:500]}\n\n"
-        "Réponds en JSON valide UNIQUEMENT, sans backticks.\n"
-        "Format :\n"
-        '{"titre_cv":"...","resume":"...","competences_a_mettre_en_avant":["..."],'
-        '"points_a_valoriser":["..."],"conseils":["..."]}'
+        "Réponds en JSON valide UNIQUEMENT, sans backticks, avec EXACTEMENT cette structure :\n"
+        '{"titre_accroche":"titre professionnel court, ex: Étudiant en Informatique | Développeur Full-Stack",'
+        '"resume_profil":"3-4 phrases percutantes qui résument le profil pour CETTE opportunité",'
+        '"formation":[{"periode":"annee-annee ou en cours","titre":"intitule du diplome","etablissement":"nom réaliste ou generique si inconnu"}],'
+        '"competences_techniques":["liste de 5-8 competences techniques, reformulees professionnellement"],'
+        '"competences_transverses":["liste de 3-5 soft skills pertinents pour cette opportunite"],'
+        '"langues":[{"langue":"nom","niveau":"Natif/Courant/Intermediaire/Notions"}],'
+        '"points_forts":["3 phrases courtes qui valorisent le profil specifiquement pour cette opportunite"],'
+        '"conseils_amelioration":["2-3 conseils concrets pour renforcer le dossier avant de postuler"]}'
     )
 
 
@@ -194,7 +203,7 @@ def generate_cv_advice(user: User, opp: Opportunity) -> dict:
             {"role": "user", "content": _build_cv_prompt(user, opp)},
         ],
         temperature=0.5,
-        max_tokens=800,
+        max_tokens=1400,
     )
     raw = completion.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
     return json.loads(raw)

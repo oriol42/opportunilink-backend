@@ -2,6 +2,7 @@
 # User model — students and organization members
 
 from sqlalchemy import Column, String, Float, Integer, Boolean, ARRAY
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from app.models.base import TimeStampedModel
 
@@ -18,10 +19,15 @@ class User(TimeStampedModel):
     field = Column(String, nullable=True)   # Informatique, Droit, Médecine...
     city = Column(String, nullable=True)    # Yaoundé, Douala...
     gpa = Column(Float, nullable=True)      # Moyenne / 20
+    age = Column(Integer, nullable=True)    # Nécessaire pour filtrer les opportunités avec limite d'âge
 
     # Arrays — PostgreSQL native array type
     languages = Column(ARRAY(String), default=list)   # ['fr', 'en', 'de']
     skills = Column(ARRAY(String), default=list)       # ['Python', 'React'...]
+    objectives = Column(ARRAY(String), default=list)   # ['bourse', 'stage'...]
+
+    # JSONB — niveau de maîtrise par compétence, ex: {"Python": 75, "React": 50}
+    skills_with_level = Column(JSONB, default=dict)
 
     # Contact
     phone = Column(String, nullable=True)  # For SMS alerts

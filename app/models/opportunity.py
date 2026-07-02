@@ -26,6 +26,8 @@ class Opportunity(TimeStampedModel):
     required_fields = Column(ARRAY(String), default=list)     # ['Informatique', 'Droit']
     required_languages = Column(ARRAY(String), default=list)  # ['fr', 'en']
     min_gpa = Column(Float, nullable=True)
+    min_age = Column(Integer, nullable=True)  # Age minimum requis (ex: bourses jeunes)
+    max_age = Column(Integer, nullable=True)  # Age maximum requis (fréquent sur les bourses)
 
     # JSONB — flexible structure for required documents
     # Example: {"required": ["cv", "lettre", "releve"], "optional": ["portfolio"]}

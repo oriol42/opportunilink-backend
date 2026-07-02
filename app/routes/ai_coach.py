@@ -26,12 +26,26 @@ class LetterResponse(BaseModel):
     word_count: int
 
 
-class CVAdviceResponse(BaseModel):
-    titre_cv: str
-    resume: str
-    competences_a_mettre_en_avant: list[str]
-    points_a_valoriser: list[str]
-    conseils: list[str]
+class FormationItem(BaseModel):
+    periode: str
+    titre: str
+    etablissement: str
+
+
+class LangueItem(BaseModel):
+    langue: str
+    niveau: str
+
+
+class CVResponse(BaseModel):
+    titre_accroche: str
+    resume_profil: str
+    formation: list[FormationItem]
+    competences_techniques: list[str]
+    competences_transverses: list[str]
+    langues: list[LangueItem]
+    points_forts: list[str]
+    conseils_amelioration: list[str]
     opportunity_title: str
 
 
@@ -71,7 +85,7 @@ def generate_letter(
     return LetterResponse(letter=letter, opportunity_title=opp.title, word_count=len(letter.split()))
 
 
-@router.post("/generate-cv", response_model=CVAdviceResponse)
+@router.post("/generate-cv", response_model=CVResponse)
 def generate_cv(
     data: LetterRequest,
     current_user: User = Depends(get_current_user),
@@ -84,13 +98,13 @@ def generate_cv(
     if not opp:
         raise HTTPException(status_code=404, detail="Opportunité introuvable.")
     try:
-        advice = generate_cv_advice(user=current_user, opp=opp)
+        cv_data = generate_cv_advice(user=current_user, opp=opp)
     except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Erreur IA : {str(e)}")
 
-    return CVAdviceResponse(opportunity_title=opp.title, **advice)
+    return CVResponse(opportunity_title=opp.title, **cv_data)
 
 
 @router.post("/chat", response_model=ChatResponse)

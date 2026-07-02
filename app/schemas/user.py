@@ -52,9 +52,19 @@ class UserProfileUpdate(BaseModel):
     field: Optional[str] = None       # Informatique, Droit...
     city: Optional[str] = None
     gpa: Optional[float] = None
+    age: Optional[int] = None
     phone: Optional[str] = None
     languages: Optional[list[str]] = None
     skills: Optional[list[str]] = None
+    objectives: Optional[list[str]] = None
+    skills_with_level: Optional[dict[str, int]] = None
+
+    @field_validator("age")
+    @classmethod
+    def age_must_be_realistic(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not (14 <= v <= 100):
+            raise ValueError("Age must be between 14 and 100")
+        return v
 
     @field_validator("gpa")
     @classmethod
@@ -78,9 +88,12 @@ class UserResponse(UserBase):
     field: Optional[str]
     city: Optional[str]
     gpa: Optional[float]
+    age: Optional[int] = None
     phone: Optional[str]
     languages: list[str] = []
     skills: list[str] = []
+    objectives: list[str] = []
+    skills_with_level: dict[str, int] = {}
     opportuni_score: int
     is_premium: bool
     created_at: datetime
