@@ -1,8 +1,8 @@
 # app/models/user.py
 # User model — students and organization members
 
-from sqlalchemy import Column, String, Float, Integer, Boolean, ARRAY
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Column, String, Float, Integer, Boolean, ARRAY, ForeignKey
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 from app.models.base import TimeStampedModel
 
@@ -31,6 +31,12 @@ class User(TimeStampedModel):
 
     # Contact
     phone = Column(String, nullable=True)  # For SMS alerts
+
+    # Lien vers l'organisation que cet utilisateur gère (module B2B).
+    # NULL pour 99% des étudiants. Utilisé pour vérifier côté serveur
+    # qu'un utilisateur n'accède qu'à SA PROPRE organisation (corrige
+    # une faille où org_id était accepté sans aucune vérification).
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=True)
 
     # Gamification
     opportuni_score = Column(Integer, default=0)  # Score 0-1000

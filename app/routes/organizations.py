@@ -17,6 +17,20 @@ from app.services.cache import cache_delete_pattern
 
 router = APIRouter()
 
+
+def verify_org_ownership(org_id: uuid.UUID, current_user: User) -> None:
+    """
+    Vérifie que l'utilisateur connecté est bien le gestionnaire de CETTE
+    organisation, avant de le laisser lire/modifier ses données.
+
+    Avant ce correctif, org_id venait du frontend sans aucune vérification
+    (IDOR) : n'importe quel étudiant connecté pouvait changer l'ID dans
+    l'URL et voir/modifier les données d'une autre organisation.
+    """
+    if current_user.organization_id is None or current_user.organization_id != org_id:
+        raise HTTPException(status_code=403, detail="Tu n'as pas accès à cette organisation.")
+
+
 class OrgCreate(BaseModel):
     name: str
     type: Optional[str] = None
@@ -58,18 +72,26 @@ class AnalyticsResponse(BaseModel):
 
 @router.post("/register", response_model=OrgResponse, status_code=201)
 def register_organization(data: OrgCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if current_user.organization_id is not None:
+        raise HTTPException(status_code=400, detail="Tu gères déjà une organisation.")
     org = Organization(name=data.name, type=data.type, domain=data.domain, website=data.website, is_verified=False, plan="free")
     db.add(org); db.commit(); db.refresh(org)
+    # Lie immédiatement l'organisation à son créateur — c'est ce lien qui
+    # manquait et qui permettait la faille IDOR sur toutes les routes ci-dessous.
+    current_user.organization_id = org.id
+    db.commit()
     return org
 
 @router.get("/me", response_model=OrgResponse)
 def get_my_organization(org_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    verify_org_ownership(org_id, current_user)
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org: raise HTTPException(status_code=404, detail="Organization not found")
     return org
 
 @router.post("/opportunities", response_model=OpportunityResponse, status_code=201)
 def publish_opportunity(data: OrgOpportunityCreate, org_id: uuid.UUID, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    verify_org_ownership(org_id, current_user)
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org: raise HTTPException(status_code=404, detail="Organization not found")
     if data.deadline and data.deadline < date.today(): raise HTTPException(status_code=400, detail="Deadline must be in the future")
@@ -84,6 +106,7 @@ def publish_opportunity(data: OrgOpportunityCreate, org_id: uuid.UUID, current_u
 
 @router.patch("/opportunities/{opportunity_id}", status_code=200)
 def toggle_opportunity_status(org_id: uuid.UUID, opportunity_id: uuid.UUID, data: ToggleStatus, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    verify_org_ownership(org_id, current_user)
     opp = db.query(Opportunity).filter(Opportunity.id == opportunity_id, Opportunity.organization_id == org_id).first()
     if not opp: raise HTTPException(status_code=404, detail="Opportunity not found")
     opp.is_active = data.is_active
@@ -93,10 +116,12 @@ def toggle_opportunity_status(org_id: uuid.UUID, opportunity_id: uuid.UUID, data
 
 @router.get("/opportunities", response_model=list[OpportunityResponse])
 def get_org_opportunities(org_id: uuid.UUID, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    verify_org_ownership(org_id, current_user)
     return db.query(Opportunity).filter(Opportunity.organization_id == org_id).order_by(Opportunity.created_at.desc()).all()
 
 @router.get("/analytics", response_model=AnalyticsResponse)
 def get_org_analytics(org_id: uuid.UUID, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    verify_org_ownership(org_id, current_user)
     opps = db.query(Opportunity).filter(Opportunity.organization_id == org_id).all()
     opp_ids = [o.id for o in opps]
     active = sum(1 for o in opps if o.is_active)
@@ -111,6 +136,7 @@ def get_org_analytics(org_id: uuid.UUID, current_user: User = Depends(get_curren
 
 @router.delete("/opportunities/{opportunity_id}", status_code=204)
 def deactivate_opportunity(org_id: uuid.UUID, opportunity_id: uuid.UUID, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    verify_org_ownership(org_id, current_user)
     opp = db.query(Opportunity).filter(Opportunity.id==opportunity_id, Opportunity.organization_id==org_id).first()
     if not opp: raise HTTPException(status_code=404, detail="Opportunity not found")
     opp.is_active = False; db.commit()

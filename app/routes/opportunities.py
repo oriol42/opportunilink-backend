@@ -24,6 +24,8 @@ def get_feed(
     type: Optional[str] = Query(None),
     country: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    max_gpa_required: Optional[float] = Query(None, description="N'affiche que les opportunités demandant au plus cette moyenne"),
+    language: Optional[str] = Query(None, description="Code langue requis, ex: fr, en"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -31,6 +33,7 @@ def get_feed(
         f"feed:user:{current_user.id}"
         f":page:{page}:limit:{limit}"
         f":type:{type}:country:{country}:search:{search}"
+        f":maxgpa:{max_gpa_required}:lang:{language}"
     )
     cached = cache_get(cache_key)
     if cached:
@@ -46,6 +49,10 @@ def get_feed(
         opps = [o for o in opps if o.country and country.lower() in o.country.lower()]
     if search:
         opps = [o for o in opps if search.lower() in o.title.lower()]
+    if max_gpa_required is not None:
+        opps = [o for o in opps if not o.min_gpa or o.min_gpa <= max_gpa_required]
+    if language:
+        opps = [o for o in opps if not o.required_languages or language in o.required_languages]
 
     ranked = build_personalized_feed(
         user=current_user,

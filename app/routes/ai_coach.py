@@ -12,6 +12,7 @@ from app.models.application import Application
 from app.models.document import Document
 from app.core.dependencies import get_current_user
 from app.services.ai_coach import generate_motivation_letter, generate_cv_advice, chat_with_coach
+from app.services.matching import pre_filter_opportunities, build_personalized_feed
 
 router = APIRouter()
 
@@ -57,6 +58,10 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: list[ChatMessage] = []
+    # NOTE : le contexte (profil + opportunités) est désormais construit
+    # côté serveur à partir du VRAI feed personnalisé de l'utilisateur —
+    # un éventuel champ "context" envoyé par le frontend est ignoré
+    # volontairement pour éviter toute divergence entre deux sources de vérité.
 
 
 class ChatResponse(BaseModel):
@@ -116,19 +121,16 @@ def chat(
     """
     Coach IA avec contexte complet :
     - Profil utilisateur
-    - Ses opportunités du feed (top 15 par score)
+    - Ses VRAIES opportunités personnalisées (mêmes que son feed, pas un tri générique)
     - Ses documents manquants
     - Son nombre de candidatures
     """
-    # Charge les opportunités actives triées par score de pertinence
-    # On prend les 15 meilleures pour injecter dans le contexte
-    opps = (
-        db.query(Opportunity)
-        .filter(Opportunity.is_active == True)
-        .order_by(Opportunity.reliability_score.desc())
-        .limit(15)
-        .all()
-    )
+    # On réutilise exactement la même logique que le feed principal
+    # (pre_filter + scoring de pertinence), pour que le coach IA parle
+    # des mêmes opportunités que celles que l'étudiant voit réellement.
+    candidates = pre_filter_opportunities(current_user, db)
+    ranked = build_personalized_feed(current_user, candidates, page=1, limit=15, db=db)
+    opps = [opp for opp, score in ranked]
 
     # Documents existants
     existing_doc_types = {

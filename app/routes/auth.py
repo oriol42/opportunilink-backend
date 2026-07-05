@@ -1,17 +1,30 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from app.database import get_db
 from app.models.user import User
 from app.schemas.user import UserRegister, UserLogin, UserResponse, TokenResponse
-from app.core.security import hash_password, verify_password, create_access_token
+from app.core.security import (
+    hash_password, verify_password, create_access_token,
+    create_reset_token, decode_reset_token,
+)
 from app.core.limiter import limiter
+from app.services.alerts import send_email
 
 router = APIRouter()
 
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
+    new_password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
     new_password: str
 
 
@@ -45,6 +58,60 @@ def login(request: Request, credentials: UserLogin, db: Session = Depends(get_db
 
     token = create_access_token(str(user.id))
     return TokenResponse(access_token=token, user=UserResponse.model_validate(user))
+
+
+@router.post("/forgot-password", status_code=status.HTTP_200_OK)
+@limiter.limit("3/minute")
+def forgot_password(request: Request, data: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """
+    Envoie un email avec un lien de réinitialisation, si le compte existe.
+
+    Important : on renvoie TOUJOURS le même message, que l'email existe ou
+    non en base. Sinon, n'importe qui pourrait deviner quels emails sont
+    inscrits sur la plateforme en testant cet endpoint (énumération de comptes).
+    """
+    generic_message = {"message": "Si un compte existe avec cet email, un lien de réinitialisation a été envoyé."}
+
+    user = db.query(User).filter(User.email == data.email).first()
+    if not user:
+        return generic_message
+
+    from app.config import settings
+    token = create_reset_token(str(user.id))
+    reset_link = f"{settings.frontend_url}/reset-password?token={token}"
+
+    html = f"""
+    <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:24px;">
+      <h2 style="color:#059669;">OpportuLink</h2>
+      <p>Bonjour {user.full_name},</p>
+      <p>Tu as demandé la réinitialisation de ton mot de passe. Clique sur le lien ci-dessous
+      (valable 30 minutes) :</p>
+      <p><a href="{reset_link}" style="background:#10b981;color:#fff;padding:12px 24px;
+        border-radius:8px;text-decoration:none;font-weight:bold;">Réinitialiser mon mot de passe</a></p>
+      <p style="color:#94a3b8;font-size:12px;">Si tu n'es pas à l'origine de cette demande, ignore cet email.</p>
+    </div>
+    """
+    send_email(to=user.email, subject="Réinitialisation de ton mot de passe OpportuLink", html=html)
+    return generic_message
+
+
+@router.post("/reset-password", status_code=status.HTTP_200_OK)
+@limiter.limit("5/minute")
+def reset_password(request: Request, data: ResetPasswordRequest, db: Session = Depends(get_db)):
+    user_id = decode_reset_token(data.token)
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Lien invalide ou expiré. Refais une demande.")
+
+    if len(data.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Le mot de passe doit faire au moins 8 caractères.")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Compte introuvable.")
+
+    user.hashed_password = hash_password(data.new_password)
+    db.commit()
+    return {"message": "Mot de passe réinitialisé avec succès."}
 
 
 @router.post("/change-password", status_code=status.HTTP_200_OK)
@@ -95,8 +162,3 @@ def change_password(
     db.commit()
 
     return {"message": "Mot de passe modifié avec succès"}
-
-
-@router.get("/me", response_model=UserResponse)
-def get_me():
-    pass

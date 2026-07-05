@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     # --- App ---
     environment: str = "development"
     allowed_origins: str = "http://localhost:3000"
+    frontend_url: str = "http://localhost:3000"
 
     @property
     def is_production(self) -> bool:

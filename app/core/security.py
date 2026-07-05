@@ -81,3 +81,32 @@ def decode_access_token(token: str) -> Optional[str]:
         return user_id if user_id else None
     except JWTError:
         return None
+
+
+# ================================
+# PASSWORD RESET TOKENS
+# ================================
+# Séparés des tokens de session : durée de vie courte (30 min) et un
+# claim "purpose" dédié, pour qu'un token de reset ne puisse jamais
+# être utilisé comme un token de connexion normal (et vice versa).
+
+def create_reset_token(user_id: str) -> str:
+    expire = datetime.utcnow() + timedelta(minutes=30)
+    payload = {
+        "sub": str(user_id),
+        "exp": expire,
+        "purpose": "password_reset",
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def decode_reset_token(token: str) -> Optional[str]:
+    """Retourne le user_id si le token est un token de reset valide, sinon None."""
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        if payload.get("purpose") != "password_reset":
+            return None
+        user_id: str = payload.get("sub")
+        return user_id if user_id else None
+    except JWTError:
+        return None

@@ -94,6 +94,7 @@ class UserResponse(UserBase):
     skills: list[str] = []
     objectives: list[str] = []
     skills_with_level: dict[str, int] = {}
+    organization_id: Optional[uuid.UUID] = None
     opportuni_score: int
     is_premium: bool
     created_at: datetime
