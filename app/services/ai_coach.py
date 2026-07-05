@@ -27,6 +27,71 @@ def _get_client():
     )
 
 
+def extract_pdf_text(file_bytes: bytes) -> str:
+    """Extrait le texte d'un PDF (retourne '' si scan/image sans texte)."""
+    import io
+    from pypdf import PdfReader
+    try:
+        reader = PdfReader(io.BytesIO(file_bytes))
+        return "\n".join((page.extract_text() or "") for page in reader.pages).strip()
+    except Exception:
+        return ""
+
+
+def analyze_document_text(text: str, doc_type: str) -> dict:
+    """
+    Analyse le texte d'un document (CV, relevé…) via Groq et extrait des infos
+    structurées pour enrichir le profil de l'étudiant.
+    """
+    client = _get_client()
+    prompt = (
+        f"Analyse ce document (type : {doc_type}) d'un étudiant africain et extrais les informations "
+        "utiles pour enrichir son profil.\n"
+        "Réponds UNIQUEMENT en JSON valide (sans backticks) avec EXACTEMENT ces clés :\n"
+        '{"skills": ["compétences techniques concrètes détectées, max 12"], '
+        '"field": "filière/domaine principal ou null", '
+        '"level": "niveau d\'études (Licence/Master/Doctorat/BTS/DUT/Ingénieur) ou null", '
+        '"gpa": moyenne_sur_20_en_nombre_ou_null, '
+        '"summary": "résumé du profil en une phrase"}\n\n'
+        "=== DOCUMENT ===\n" + text[:4000]
+    )
+    completion = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": "Tu es un assistant RH. Réponds uniquement en JSON valide, sans backticks ni texte autour."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.2,
+        max_tokens=700,
+    )
+    raw = completion.choices[0].message.content.strip().replace("```json", "").replace("```", "").strip()
+    return json.loads(raw)
+
+
+def translate_text(text: str, target_lang: str = "fr") -> str:
+    """
+    Traduit un texte vers la langue cible (fr, en, ...) via Groq.
+    Conserve la mise en forme (paragraphes) et renvoie uniquement la traduction.
+    """
+    if not text or not text.strip():
+        return text
+    client = _get_client()
+    lang_name = LANGUAGE_NAMES.get(target_lang, target_lang)
+    completion = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": (
+                f"Tu es un traducteur professionnel. Traduis fidèlement le texte en {lang_name}. "
+                "Conserve le sens, le ton et la mise en forme (paragraphes, listes, sauts de ligne). "
+                "Réponds UNIQUEMENT avec la traduction, sans introduction, note ni commentaire."
+            )},
+            {"role": "user", "content": text[:4000]},
+        ],
+        temperature=0.2,
+    )
+    return completion.choices[0].message.content.strip()
+
+
 # ── PROMPTS LETTRE & CV (inchangés, ils fonctionnaient bien) ──────────────
 
 def _build_letter_prompt(user, opp):
@@ -100,7 +165,7 @@ def _build_cv_prompt(user, opp):
 
 # ── SYSTEM PROMPT DU COACH — avec données réelles ─────────────────────────
 
-def _build_coach_system_prompt(user: User, opportunities: list = None, context_data: dict = None) -> str:
+def _build_coach_system_prompt(user: User, opportunities: list = None, context_data: dict = None, focus_opp: Opportunity = None) -> str:
     """
     System prompt riche : profil + opportunités réelles du feed + documents manquants + candidatures.
     Plus le contexte est riche, plus l'IA est pertinente.
@@ -152,8 +217,24 @@ def _build_coach_system_prompt(user: User, opportunities: list = None, context_d
         if profile_pct < 60:
             context_section += " ⚠️ (profil incomplet — recommande de le compléter)"
 
+    # Section "opportunité en focus" — chat contextuel ouvert depuis une page opportunité
+    focus_section = ""
+    if focus_opp is not None:
+        fo_deadline = str(focus_opp.deadline) if focus_opp.deadline else "non précisée"
+        focus_section = (
+            "\n\n=== OPPORTUNITÉ ACTUELLEMENT CONSULTÉE (l'étudiant veut en parler) ===\n"
+            f"Titre : {focus_opp.title}\n"
+            f"Type : {focus_opp.type}\n"
+            f"Pays : {focus_opp.country or 'non précisé'}\n"
+            f"Deadline : {fo_deadline}\n"
+            f"Niveaux acceptés : {', '.join(focus_opp.required_level) if focus_opp.required_level else 'tous'}\n"
+            f"Filières acceptées : {', '.join(focus_opp.required_fields) if focus_opp.required_fields else 'toutes'}\n"
+            f"Description : {(focus_opp.description or '')[:800]}\n"
+            "→ Aide l'étudiant à évaluer si cette opportunité lui correspond et à préparer sa candidature."
+        )
+
     return (
-        "Tu es le Coach IA d'OpportuLink, expert en développement de carrière pour étudiants camerounais et africains.\n\n"
+        "Tu es **Link IA**, le coach carrière d'OpportuniLink, expert en développement de carrière pour étudiants camerounais et africains.\n\n"
         "Tu maîtrises :\n"
         "- Les bourses internationales : DAAD, Erasmus+, Campus France, AUF, MasterCard Foundation, "
         "Bourse Excellence Éiffel, Commonwealth, Fulbright, Orange Bourses\n"
@@ -164,17 +245,23 @@ def _build_coach_system_prompt(user: User, opportunities: list = None, context_d
         "- La préparation aux entretiens de sélection\n\n"
         f"=== PROFIL DE L'ÉTUDIANT ===\n{profil_section}"
         f"{opps_section}"
-        f"{context_section}\n\n"
+        f"{context_section}"
+        f"{focus_section}\n\n"
         "=== TES RÈGLES ===\n"
         "1. Réponds TOUJOURS en français, avec chaleur et encouragement.\n"
-        "2. Utilise le profil et les opportunités ci-dessus pour personnaliser chaque réponse.\n"
-        "3. Si l'étudiant parle d'une opportunité de son feed, utilise ses vraies données (titre, deadline, pays).\n"
-        "4. Sois concret : donne des étapes précises et actionnables, pas des généralités.\n"
-        "5. Génère des plans d'étude structurés quand demandé (semaine par semaine si possible).\n"
-        "6. Maximum 4 paragraphes OU une liste structurée — jamais les deux à la fois.\n"
-        "7. Ne génère JAMAIS de fausses informations. Si tu ne sais pas, dis-le.\n"
-        "8. Mentionne les documents manquants si c'est pertinent pour la question.\n"
-        "9. Adapte le ton : urgence si deadline proche, encouragement si profil faible."
+        "2. LONGUEUR ADAPTÉE — c'est essentiel : pour un message simple (salutation, remerciement, "
+        "question brève), réponds en 1 à 2 phrases MAX, sans liste ni structure. "
+        "Exemple : « bonjour » → « Bonjour {prénom} ! Comment vas-tu ? En quoi puis-je t'aider aujourd'hui ? ». "
+        "Ne déploie une réponse longue et structurée QUE si la question l'exige vraiment.\n"
+        "3. Sois PROACTIF : quand c'est utile, termine par UNE question ciblée ou une prochaine étape concrète.\n"
+        "4. Personnalise avec le profil et les VRAIES opportunités ci-dessus (titre, deadline, pays réels).\n"
+        "5. Sur demande, génère des PLANS D'ENTRAÎNEMENT structurés (semaine par semaine) pour préparer une opportunité "
+        "(compétences à travailler, documents à réunir, jalons jusqu'à la deadline).\n"
+        "6. Appuie-toi sur des SOURCES OFFICIELLES et fiables (sites officiels des programmes : daad.de, "
+        "campusfrance.org, erasmusplus, etc.) et invite l'étudiant à vérifier deadline et critères sur la source officielle. "
+        "N'invente JAMAIS d'information : si tu n'es pas sûr, dis-le clairement.\n"
+        "7. Reste concret et actionnable ; pas de blabla. Une réponse longue = 4 paragraphes MAX ou une liste, jamais les deux.\n"
+        "8. Adapte le ton : urgence si deadline proche, encouragement si profil faible."
     )
 
 
@@ -215,12 +302,14 @@ def chat_with_coach(
     history: list[dict],
     opportunities: list = None,
     context_data: dict = None,
+    focus_opp: Opportunity = None,
 ) -> str:
     """
-    Chat avec contexte complet : profil + opportunités réelles + docs + candidatures.
+    Chat avec contexte complet : profil + opportunités réelles + docs + candidatures
+    (+ éventuellement une opportunité en focus, ouverte depuis sa page).
     """
     client = _get_client()
-    system_prompt = _build_coach_system_prompt(user, opportunities=opportunities, context_data=context_data)
+    system_prompt = _build_coach_system_prompt(user, opportunities=opportunities, context_data=context_data, focus_opp=focus_opp)
 
     messages = [{"role": "system", "content": system_prompt}]
 

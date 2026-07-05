@@ -10,7 +10,7 @@ from app.models.opportunity import Opportunity
 from app.models.saved import SavedOpportunity
 from app.schemas.opportunity import OpportunityCreate, OpportunityResponse, OpportunityFeedItem
 from app.core.dependencies import get_current_user
-from app.services.matching import build_personalized_feed, pre_filter_opportunities
+from app.services.matching import build_personalized_feed, pre_filter_opportunities, compute_relevance_score, load_user_history
 from app.services.scoring import compute_preparation_score
 from app.services.cache import cache_get, cache_set, cache_delete_pattern
 
@@ -87,7 +87,15 @@ def get_saved_opportunities(
         Opportunity.id.in_(opp_ids),
         Opportunity.is_active == True,
     ).all()
-    return [OpportunityFeedItem.model_validate(o) for o in opps]
+    # Calcule le vrai score de match (même logique que le feed) au lieu de
+    # renvoyer 0 par défaut — l'historique est chargé une seule fois.
+    history = load_user_history(current_user.id, db)
+    result = []
+    for o in opps:
+        item = OpportunityFeedItem.model_validate(o)
+        item.relevance_score = compute_relevance_score(current_user, o, history)
+        result.append(item)
+    return result
 
 
 @router.get("/{opportunity_id}", response_model=OpportunityResponse)

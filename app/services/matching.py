@@ -34,18 +34,41 @@ def extract_keywords(text: str) -> set:
     return set(re.findall(r'\b[a-zA-Z\xc0-\xff]{3,}\b', text.lower()))
 
 
+# Mapping objectif de carrière (profil) → types d'opportunités correspondants.
+# L'étudiant déclare explicitement ce qu'il cherche : c'est le signal le plus fort.
+OBJECTIVE_TO_TYPES = {
+    "bourse":  {"bourse"},
+    "stage":   {"stage"},
+    "emploi":  {"emploi"},
+    "echange": {"echange"},
+    "master":  {"bourse", "formation"},
+    "startup": {"concours", "emploi"},
+}
+
+
 def compute_profile_match_score(user: User, opp: Opportunity) -> float:
     score = 0.0
+
+    # 1. Objectif de carrière ↔ type d'opportunité (signal le plus fort)
+    wanted_types = set()
+    for obj in (user.objectives or []):
+        wanted_types |= OBJECTIVE_TO_TYPES.get(obj, set())
+    if wanted_types and opp.type in wanted_types:
+        score += 35
+
+    # 2. Filière : match officiel (required_fields) > simple mention dans la description
+    if user.field:
+        if opp.required_fields and user.field in opp.required_fields:
+            score += 30
+        elif opp.description and user.field.lower() in opp.description.lower():
+            score += 15
+
+    # 3. Compétences de l'étudiant mentionnées dans la description
     if user.skills and opp.description:
         user_skills = set(s.lower() for s in user.skills)
         matches = len(user_skills.intersection(extract_keywords(opp.description)))
-        score += min(matches * 10, 40)
-    if user.field and opp.description:
-        if user.field.lower() in opp.description.lower():
-            score += 30
-    if user.field and opp.type:
-        if user.field.lower() in {"informatique", "genie logiciel"} and opp.type == "stage":
-            score += 30
+        score += min(matches * 8, 25)
+
     return min(score, 100.0)
 
 
@@ -133,7 +156,9 @@ def compute_relevance_score(user: User, opp: Opportunity, history: dict | None =
     u = compute_urgency_score(opp)
     r = compute_reliability_score(opp)
     h = compute_history_score(user, opp, history)
-    return round((e * 0.40) + (p * 0.25) + (u * 0.15) + (r * 0.10) + (h * 0.10), 2)
+    # Pertinence (objectifs + filière + compétences) revalorisée à 0.35 pour des
+    # résultats plus ciblés, l'éligibilité restant déterminante à 0.35.
+    return round((e * 0.35) + (p * 0.35) + (u * 0.12) + (r * 0.08) + (h * 0.10), 2)
 
 
 def pre_filter_opportunities(user: User, db) -> list:

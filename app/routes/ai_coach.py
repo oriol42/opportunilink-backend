@@ -11,7 +11,7 @@ from app.models.opportunity import Opportunity
 from app.models.application import Application
 from app.models.document import Document
 from app.core.dependencies import get_current_user
-from app.services.ai_coach import generate_motivation_letter, generate_cv_advice, chat_with_coach
+from app.services.ai_coach import generate_motivation_letter, generate_cv_advice, chat_with_coach, translate_text
 from app.services.matching import pre_filter_opportunities, build_personalized_feed
 
 router = APIRouter()
@@ -58,6 +58,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: list[ChatMessage] = []
+    opportunity_id: Optional[uuid.UUID] = None  # chat ouvert depuis une opportunité précise
     # NOTE : le contexte (profil + opportunités) est désormais construit
     # côté serveur à partir du VRAI feed personnalisé de l'utilisateur —
     # un éventuel champ "context" envoyé par le frontend est ignoré
@@ -66,6 +67,33 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+
+
+class TranslateRequest(BaseModel):
+    text: str
+    target_lang: str = "fr"
+
+
+class TranslateResponse(BaseModel):
+    translated: str
+    target_lang: str
+
+
+@router.post("/translate", response_model=TranslateResponse)
+def translate(
+    data: TranslateRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Traduit un texte (description d'opportunité, etc.) vers fr/en via l'IA."""
+    if not data.text.strip():
+        raise HTTPException(status_code=400, detail="Texte vide.")
+    try:
+        translated = translate_text(data.text, data.target_lang)
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Erreur IA : {str(e)}")
+    return TranslateResponse(translated=translated, target_lang=data.target_lang)
 
 
 @router.post("/generate-letter", response_model=LetterResponse)
@@ -160,6 +188,14 @@ def chat(
         "profile_pct": profile_pct,
     }
 
+    # Opportunité en focus (chat ouvert depuis sa page) — contexte ciblé
+    focus_opp = None
+    if data.opportunity_id:
+        focus_opp = db.query(Opportunity).filter(
+            Opportunity.id == data.opportunity_id,
+            Opportunity.is_active == True,
+        ).first()
+
     try:
         reply = chat_with_coach(
             user=current_user,
@@ -167,6 +203,7 @@ def chat(
             history=[{"role": m.role, "content": m.content} for m in data.history],
             opportunities=opps,
             context_data=context_data,
+            focus_opp=focus_opp,
         )
     except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e))

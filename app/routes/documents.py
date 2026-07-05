@@ -3,8 +3,10 @@
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 from typing import Optional
 import uuid
+import httpx
 
 from app.database import get_db
 from app.models.user import User
@@ -16,7 +18,7 @@ from app.services.storage import upload_file, delete_file
 router = APIRouter()
 
 # Allowed document types
-VALID_TYPES = {"cni", "releve", "attestation", "cv", "photo", "autre"}
+VALID_TYPES = {"cni", "releve", "attestation", "cv", "lettre", "photo", "autre"}
 
 # Max file size: 5MB
 MAX_FILE_SIZE = 5 * 1024 * 1024
@@ -149,6 +151,104 @@ async def upload_document(
     db.refresh(doc)
 
     return DocumentResponse.model_validate(doc)
+
+
+# ============================================================
+# POST /documents/save-generated — Archiver un CV/lettre généré par l'IA
+# ============================================================
+
+class SaveGeneratedRequest(BaseModel):
+    kind: str                       # "cv" | "lettre"
+    title: str
+    body: Optional[str] = None      # texte de la lettre
+    cv: Optional[dict] = None       # CV structuré (CVResponse)
+
+
+@router.post("/save-generated", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
+async def save_generated(
+    data: SaveGeneratedRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Génère un PDF (CV ou lettre) et l'archive dans le coffre-fort de l'étudiant."""
+    from app.services.pdf import letter_pdf, cv_pdf
+
+    author = current_user.full_name or "Candidat"
+    if data.kind == "cv":
+        contact = " - ".join(x for x in [current_user.email, current_user.phone, current_user.city] if x)
+        pdf_bytes = cv_pdf(author, contact, data.cv or {})
+        doc_type = "cv"
+    elif data.kind == "lettre":
+        pdf_bytes = letter_pdf(author, data.title, data.body or "")
+        doc_type = "lettre"
+    else:
+        raise HTTPException(status_code=400, detail="kind doit être 'cv' ou 'lettre'.")
+
+    safe = "".join(c for c in data.title if c.isalnum() or c in " -_").strip()[:40] or doc_type
+    storage_path = f"{current_user.id}/{doc_type}_{uuid.uuid4()}.pdf"
+    try:
+        file_url = await upload_file(pdf_bytes, storage_path, "application/pdf")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Échec de l'enregistrement : {str(e)}")
+
+    doc = Document(
+        user_id=current_user.id, type=doc_type,
+        file_path=file_url, file_name=f"{safe}.pdf", is_valid=True,
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+    return DocumentResponse.model_validate(doc)
+
+
+# ============================================================
+# POST /documents/{id}/analyze — L'IA lit le document (PDF) pour enrichir le profil
+# ============================================================
+
+@router.post("/{document_id}/analyze")
+async def analyze_document_ai(
+    document_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Télécharge le document, en extrait le texte (PDF) et l'analyse via l'IA pour
+    proposer des informations (compétences, filière, niveau, moyenne) enrichissant
+    le profil — ce profil enrichi améliore ensuite la génération de CV et lettres.
+    """
+    doc = db.query(Document).filter(
+        Document.id == document_id,
+        Document.user_id == current_user.id,
+    ).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document introuvable.")
+
+    if "pdf" not in (doc.file_name or "").lower() and "pdf" not in (doc.file_path or "").lower():
+        raise HTTPException(status_code=400, detail="L'analyse IA ne supporte que les PDF pour le moment.")
+
+    from app.services.storage import HEADERS
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(doc.file_path, headers=HEADERS)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Téléchargement impossible : {str(e)}")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail="Impossible de récupérer le document depuis le stockage.")
+
+    from app.services.ai_coach import extract_pdf_text, analyze_document_text
+    text = extract_pdf_text(resp.content)
+    if len(text) < 40:
+        raise HTTPException(
+            status_code=422,
+            detail="Ce document semble être un scan/image sans texte lisible. L'analyse nécessite un PDF contenant du texte.",
+        )
+    try:
+        result = analyze_document_text(text, doc.type)
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Erreur IA : {str(e)}")
+    return result
 
 
 # ============================================================
