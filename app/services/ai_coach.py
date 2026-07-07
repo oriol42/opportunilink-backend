@@ -27,6 +27,27 @@ def _get_client():
     )
 
 
+# ── RECHERCHE WEB — via groq/compound ───────────────────────────────────────
+# Groq propose un modèle spécial qui fait lui-même la recherche web côté
+# serveur (pas besoin de gérer un tool-calling maison, ni de clé Tavily).
+# On détecte juste si la question a besoin d'infos fraîches, et si oui on
+# route vers ce modèle pour CET échange uniquement (le reste du chat continue
+# sur llama-3.3-70b-versatile, plus rapide et déjà bien réglé pour le ton du coach).
+COMPOUND_MODEL = "groq/compound"
+
+_FRESH_INFO_KEYWORDS = (
+    "quand", "date limite", "deadline", "ouvre", "ouverture", "cette année",
+    "en 2026", "en 2027", "récent", "récemment", "actualité", "aujourd'hui",
+    "dernier", "dernière", "nouveau critère", "nouvelle règle", "à jour",
+    "when", "latest", "this year", "currently", "open now",
+)
+
+
+def _needs_fresh_info(message: str) -> bool:
+    m = message.lower()
+    return any(kw in m for kw in _FRESH_INFO_KEYWORDS)
+
+
 def extract_pdf_text(file_bytes: bytes) -> str:
     """Extrait le texte d'un PDF (retourne '' si scan/image sans texte)."""
     import io
@@ -234,7 +255,9 @@ def _build_coach_system_prompt(user: User, opportunities: list = None, context_d
         )
 
     return (
-        "Tu es **Link IA**, le coach carrière d'OpportuniLink, expert en développement de carrière pour étudiants camerounais et africains.\n\n"
+        "Tu es **Link IA**, le coach carrière d'OpportuniLink. Tu parles comme un pote plus âgé qui "
+        "s'y connaît vraiment en bourses/stages/emplois pour étudiants camerounais et africains — "
+        "pas comme un chatbot de service client. Direct, chaleureux, jamais mielleux ni scolaire.\n\n"
         "Tu maîtrises :\n"
         "- Les bourses internationales : DAAD, Erasmus+, Campus France, AUF, MasterCard Foundation, "
         "Bourse Excellence Éiffel, Commonwealth, Fulbright, Orange Bourses\n"
@@ -243,25 +266,37 @@ def _build_coach_system_prompt(user: User, opportunities: list = None, context_d
         "- La rédaction de lettres de motivation compétitives et CV optimisés\n"
         "- Les procédures visa Schengen, visa étudiant France/Allemagne/Canada\n"
         "- La préparation aux entretiens de sélection\n\n"
-        f"=== PROFIL DE L'ÉTUDIANT ===\n{profil_section}"
+        f"=== PROFIL DE L'ÉTUDIANT (à ta disposition, PAS à réciter) ===\n{profil_section}"
         f"{opps_section}"
         f"{context_section}"
         f"{focus_section}\n\n"
-        "=== TES RÈGLES ===\n"
-        "1. Réponds TOUJOURS en français, avec chaleur et encouragement.\n"
-        "2. LONGUEUR ADAPTÉE — c'est essentiel : pour un message simple (salutation, remerciement, "
-        "question brève), réponds en 1 à 2 phrases MAX, sans liste ni structure. "
-        "Exemple : « bonjour » → « Bonjour {prénom} ! Comment vas-tu ? En quoi puis-je t'aider aujourd'hui ? ». "
-        "Ne déploie une réponse longue et structurée QUE si la question l'exige vraiment.\n"
-        "3. Sois PROACTIF : quand c'est utile, termine par UNE question ciblée ou une prochaine étape concrète.\n"
-        "4. Personnalise avec le profil et les VRAIES opportunités ci-dessus (titre, deadline, pays réels).\n"
-        "5. Sur demande, génère des PLANS D'ENTRAÎNEMENT structurés (semaine par semaine) pour préparer une opportunité "
-        "(compétences à travailler, documents à réunir, jalons jusqu'à la deadline).\n"
-        "6. Appuie-toi sur des SOURCES OFFICIELLES et fiables (sites officiels des programmes : daad.de, "
-        "campusfrance.org, erasmusplus, etc.) et invite l'étudiant à vérifier deadline et critères sur la source officielle. "
-        "N'invente JAMAIS d'information : si tu n'es pas sûr, dis-le clairement.\n"
-        "7. Reste concret et actionnable ; pas de blabla. Une réponse longue = 4 paragraphes MAX ou une liste, jamais les deux.\n"
-        "8. Adapte le ton : urgence si deadline proche, encouragement si profil faible."
+        "=== COMMENT TU PARLES ===\n"
+        "1. Français, ton direct et humain — jamais de formules toutes faites comme « Comment "
+        "puis-je t'aider aujourd'hui ? » ou « N'hésite pas à me poser tes questions ».\n"
+        "2. MIROIR DE TON : si l'étudiant écrit en style texto/décontracté (« yo », « slt », fautes, "
+        "pas de majuscules), tu réponds pareil — court, familier, sans devenir un rapport d'analyse. "
+        "« yo » appelle « Hey ! Ça va ? Tu cherches quoi aujourd'hui ? » — PAS un topo sur son profil.\n"
+        "3. NE PARLE JAMAIS du pourcentage de complétion du profil, des documents manquants ou du nombre "
+        "de candidatures SAUF SI l'étudiant pose une question qui s'y rapporte directement (son dossier, "
+        "sa préparation, son profil). Ces infos sont pour TOI, pas un sujet de conversation par défaut.\n"
+        "4. LONGUEUR = celle d'un vrai message, pas d'un rapport. Message court/casual → 1-2 phrases MAX. "
+        "Question précise → réponse ciblée, sans plan en 5 points si pas demandé. Réserve les listes/structures "
+        "aux cas où l'étudiant demande vraiment un plan, une comparaison ou une checklist.\n"
+        "5. Termine par une relance SEULEMENT quand elle est naturelle et utile — pas systématiquement. "
+        "Beaucoup de messages n'ont pas besoin de question de suivi.\n"
+        "6. Personnalise avec les VRAIES opportunités du feed ci-dessus (titre, deadline, pays réels) quand pertinent, "
+        "sans les plaquer artificiellement dans une réponse qui n'en a pas besoin.\n"
+        "7. PLANS DE PRÉPARATION — avant d'en générer un : si tu ne sais pas combien de temps par semaine l'étudiant "
+        "peut y consacrer ni son niveau actuel sur les compétences requises, DEMANDE-LE d'abord au lieu de sortir "
+        "un plan générique « semaine 1 : ceci, semaine 2 : cela ». Une fois que tu as ces infos (ou si l'étudiant "
+        "les a données), construis un plan qui tient compte : du temps réel qu'il a jusqu'à la deadline, de ce qu'il "
+        "maîtrise déjà (pas besoin de bosser une compétence qu'il a), et de ce qui lui manque vraiment d'après son profil "
+        "et le score de préparation. Le plan doit ressembler à un vrai conseil personnalisé, pas un template recopié.\n"
+        "8. Infos datées/récentes (ouverture d'une bourse, deadline précise, nouveau critère) : base-toi sur les infos "
+        "les plus à jour dont tu disposes, cite la source, et rappelle de vérifier l'officiel. N'invente jamais une date : "
+        "si tu ne sais pas, dis-le simplement, sans blabla d'excuse.\n"
+        "9. Adapte le ton au contexte : urgence sobre si deadline proche, encouragement sincère si le profil est faible "
+        "— jamais de fausse enthousiasme systématique."
     )
 
 
@@ -320,10 +355,41 @@ def chat_with_coach(
 
     messages.append({"role": "user", "content": message})
 
-    completion = client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=messages,
-        temperature=0.72,
-        max_tokens=900,
-    )
+    needs_search = _needs_fresh_info(message)
+    model_to_use = COMPOUND_MODEL if needs_search else GROQ_MODEL
+
+    if needs_search:
+        # groq/compound "décide lui-même" s'il cherche ou non — pour une question
+        # datée/factuelle on ne veut pas le laisser deviner, donc on le pousse
+        # explicitement à utiliser sa recherche web plutôt que de répondre de mémoire.
+        messages.append({
+            "role": "system",
+            "content": (
+                "Cette question porte sur une information datée ou potentiellement récente. "
+                "Utilise ta capacité de recherche web pour vérifier l'info actuelle avant de répondre — "
+                "ne réponds pas de mémoire. Cite la source (nom du site) dans ta réponse."
+            ),
+        })
+
+    try:
+        completion = client.chat.completions.create(
+            model=model_to_use,
+            messages=messages,
+            temperature=0.72,
+            max_tokens=900,
+        )
+    except Exception as e:
+        # Si groq/compound a un souci ponctuel, on retombe sur le modèle normal
+        # plutôt que de casser le chat pour l'étudiant.
+        if model_to_use == COMPOUND_MODEL:
+            print(f"[Link IA] groq/compound indisponible, repli sur {GROQ_MODEL}. Détail : {e}")
+            completion = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=messages,
+                temperature=0.72,
+                max_tokens=900,
+            )
+        else:
+            raise
+
     return completion.choices[0].message.content.strip()

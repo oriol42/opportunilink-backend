@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     # --- AI (optionnel pour le MVP) ---
     gemini_api_key: str | None = None
     groq_api_key: str | None = None
+    tavily_api_key: str | None = None  # Recherche web gratuite pour Link IA (tavily.com)
     # --- Cache & Tasks (optionnel pour le MVP) ---
     redis_url: str | None = None
     # --- Notifications (optionnel pour le MVP) ---

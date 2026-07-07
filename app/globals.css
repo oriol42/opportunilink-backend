@@ -1,0 +1,12 @@
+
+/* ── Refonte page opportunité : hero éditorial (titre + carte "coup d'œil")
+   qui doit s'empiler proprement sous les petites largeurs, comme le grid
+   de contenu principal juste en dessous. ── */
+.opp-hero-grid {
+  grid-template-columns: 1fr 300px;
+}
+@media (max-width: 900px) {
+  .opp-hero-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
