@@ -13,6 +13,9 @@ def compute_eligibility_score(user: User, opp: Opportunity) -> float:
     if opp.required_fields:
         if user.field not in opp.required_fields:
             score -= 30
+    if opp.target_gender and opp.target_gender != "tous" and user.gender:
+        if user.gender != opp.target_gender:
+            score -= 50  # eliminatoire, comme le niveau d etudes
     if opp.required_languages:
         missing = set(opp.required_languages) - set(user.languages or [])
         score -= len(missing) * 20

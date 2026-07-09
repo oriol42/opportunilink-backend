@@ -2,7 +2,9 @@
 import subprocess
 import logging
 import os
+import time
 from app.celery_app import celery_app
+from app.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -118,3 +120,48 @@ def crawl_all():
         logger.info(f"Starting spider: {spider}")
         results.append(_run_spider(spider, max_items=50))
     return results
+
+
+@celery_app.task(name="classify_unclassified_opportunities")
+def classify_unclassified_opportunities(batch_size: int = 50):
+    """
+    Passe en revue les opportunites pas encore analysees par l IA (documents
+    reels requis + filieres et genre reellement concernes) et les classifie.
+
+    Utilise settings.groq_api_key_backfill si configuree (compte Groq separe
+    de celui de Link IA -> quota independant, batch_size=50 reste large sous
+    la limite gratuite ~100k tokens/jour). Si aucune cle dediee n est
+    configuree, retombe sur la cle principale : dans ce cas, NE PAS augmenter
+    batch_size au-dela de ~20 pour ne pas affamer Link IA cote utilisateurs.
+    """
+    from app.models.opportunity import Opportunity
+    from app.services.scoring import persist_ai_classification
+
+    db = SessionLocal()
+    classified, errors = 0, 0
+    try:
+        candidates = (
+            db.query(Opportunity)
+            .filter(Opportunity.is_active == True)
+            .order_by(Opportunity.created_at.desc())
+            .limit(batch_size * 4)  # marge car on filtre ensuite en Python
+            .all()
+        )
+        todo = [
+            o for o in candidates
+            if not (o.required_docs and o.required_docs.get("ai_extracted"))
+        ][:batch_size]
+
+        for opp in todo:
+            try:
+                persist_ai_classification(db, opp)
+                classified += 1
+                time.sleep(2.5)  # throttle : reste large sous le rate limit Groq
+            except Exception as e:
+                errors += 1
+                logger.warning(f"Classification echouee pour {opp.id}: {e}")
+
+        logger.info(f"classify_unclassified_opportunities: {classified} ok, {errors} erreurs")
+        return {"classified": classified, "errors": errors}
+    finally:
+        db.close()

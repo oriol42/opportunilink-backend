@@ -33,6 +33,14 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(hour=8, minute=0),
     },
 
+    # ── Classification IA (documents + filieres reelles) ──────
+    # Une fois par jour : meme avec la cle dediee, on reste sous son propre
+    # quota gratuit (~100k tokens/jour ; batch_size=50 ~ 85k tokens).
+    "classify-unclassified-opportunities": {
+        "task": "classify_unclassified_opportunities",
+        "schedule": crontab(hour=3, minute=0),
+    },
+
     # ── Crawlers haute fréquence (2x/jour) ───────────────────
     "crawl-opportunity-desk-twice-daily": {
         "task": "crawl_opportunity_desk",

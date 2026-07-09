@@ -28,6 +28,7 @@ class Opportunity(TimeStampedModel):
     min_gpa = Column(Float, nullable=True)
     min_age = Column(Integer, nullable=True)  # Age minimum requis (ex: bourses jeunes)
     max_age = Column(Integer, nullable=True)  # Age maximum requis (fréquent sur les bourses)
+    target_gender = Column(String, nullable=True)  # null/'tous' = ouvert a tous, sinon 'femmes'/'hommes' 
 
     # JSONB — flexible structure for required documents
     # Example: {"required": ["cv", "lettre", "releve"], "optional": ["portfolio"]}

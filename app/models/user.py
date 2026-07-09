@@ -20,6 +20,8 @@ class User(TimeStampedModel):
     city = Column(String, nullable=True)    # Yaoundé, Douala...
     gpa = Column(Float, nullable=True)      # Moyenne / 20
     age = Column(Integer, nullable=True)    # Nécessaire pour filtrer les opportunités avec limite d'âge
+    gender = Column(String, nullable=True)  # 'homme' / 'femme' — optionnel, auto-déclaré,
+                                              # sert uniquement pour les opportunités reservées a un genre
 
     # Arrays — PostgreSQL native array type
     languages = Column(ARRAY(String), default=list)   # ['fr', 'en', 'de']

@@ -36,7 +36,13 @@ def register(request: Request, user_data: UserRegister, db: Session = Depends(ge
         raise HTTPException(status_code=400, detail="An account with this email already exists")
 
     hashed = hash_password(user_data.password)
-    new_user = User(email=user_data.email, full_name=user_data.full_name, hashed_password=hashed)
+    new_user = User(
+        email=user_data.email,
+        full_name=user_data.full_name,
+        hashed_password=hashed,
+        languages=["fr"],  # Plateforme francophone (Cameroun) : défaut réaliste,
+                            # évite de flaguer "langue manquante" pour ~tous les étudiants
+    )
     db.add(new_user)
     db.flush()
     token = create_access_token(str(new_user.id))

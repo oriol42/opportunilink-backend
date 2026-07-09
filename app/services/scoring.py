@@ -11,6 +11,20 @@ from app.models.document import Document
 
 logger = logging.getLogger(__name__)
 
+# Identique a la liste FIELDS du frontend (app/onboarding/page.tsx) —
+# permet a l IA de classer une opportunite sur les memes valeurs que user.field
+FIELD_TAXONOMY = [
+    "Informatique", "Génie Logiciel", "Réseaux & Télécoms", "Intelligence Artificielle",
+    "Droit", "Sciences Politiques", "Relations Internationales",
+    "Médecine", "Pharmacie", "Santé Publique",
+    "Économie", "Gestion", "Finance", "Marketing", "Comptabilité",
+    "Lettres & Sciences Humaines", "Langues", "Journalisme", "Communication",
+    "Sciences", "Mathématiques", "Physique", "Chimie", "Biologie",
+    "Ingénierie Civile", "Architecture", "Mécanique", "Électronique",
+    "Agriculture", "Environnement", "Éducation", "Psychologie", "Sociologie",
+    "Art & Design", "Audiovisuel", "Tourisme & Hôtellerie", "Autre",
+]
+
 
 def has_document(db: Session, user_id, doc_type: str) -> bool:
     doc = db.query(Document).filter(
@@ -21,7 +35,7 @@ def has_document(db: Session, user_id, doc_type: str) -> bool:
     return doc is not None
 
 
-def extract_requirements_from_description(opp: Opportunity) -> dict:
+def extract_requirements_from_description(opp: Opportunity, use_backfill_key: bool = False) -> dict:
     """
     Utilise Groq/Llama pour extraire depuis la description :
     - Les documents vraiment requis
@@ -41,14 +55,25 @@ def extract_requirements_from_description(opp: Opportunity) -> dict:
         return {
             "ai_extracted": False,
             "required_docs": ["cv", "releve"],
+            "specific_documents": [],
             "key_skills": [],
             "lang_tests": [],
             "specific_criteria": [],
+            "target_fields": [],  # inconnu -> on ne restreint pas
+            "target_gender": "tous",
         }
 
     try:
         from app.config import settings
-        if not settings.groq_api_key:
+        # La classification en masse (backfill/tache nocturne) utilise une cle Groq
+        # dediee si elle est configuree, pour ne jamais empieter sur le quota de
+        # Link IA cote utilisateurs reels. Fallback sur la cle principale si absente.
+        api_key = (
+            settings.groq_api_key_backfill
+            if use_backfill_key and settings.groq_api_key_backfill
+            else settings.groq_api_key
+        )
+        if not api_key:
             raise ValueError("No Groq key")
 
         import httpx
@@ -57,7 +82,7 @@ def extract_requirements_from_description(opp: Opportunity) -> dict:
         http_client = httpx.Client(
             transport=httpx.HTTPTransport(local_address="0.0.0.0")
         )
-        client = Groq(api_key=settings.groq_api_key, http_client=http_client)
+        client = Groq(api_key=api_key, http_client=http_client)
 
         prompt = f"""Analyse cette description d opportunite et extrait les informations en JSON.
 
@@ -72,9 +97,12 @@ Reponds UNIQUEMENT avec ce JSON valide, sans backticks :
 {{
   "ai_extracted": true,
   "required_docs": ["liste des documents requis parmi : cv, releve, cni, lettre_motivation, lettre_recommandation, photo, diplome, attestation, portfolio, autre"],
+  "specific_documents": ["documents cites explicitement dans le texte qui ne rentrent dans aucune categorie ci-dessus, avec leur libelle exact (ex: 'Extrait de casier judiciaire de moins de 3 mois', 'Registre de commerce ou carte de contribuable', 'Acte de naissance') — liste vide si aucun"],
   "key_skills": ["competences techniques specifiquement mentionnees"],
   "lang_tests": ["tests de langue requis ex: TOEFL, IELTS, DELF, DALF, TestDaF ou vide si aucun"],
   "specific_criteria": ["criteres specifiques importants non couverts ailleurs"],
+  "target_fields": ["filieres d etudes reellement concernees par cette opportunite, choisies UNIQUEMENT parmi cette liste exacte : {", ".join(FIELD_TAXONOMY)}. Base-toi sur le METIER ou le SECTEUR reel de l opportunite, pas sur la simple presence d un mot dans le texte : par exemple un programme de collecte de donnees sur le VIH/SIDA concerne 'Santé Publique', pas 'Informatique', meme si le mot 'data' y apparait. Si l opportunite est explicitement ouverte a toutes les filieres (bourse generale, concours tout public, stage generaliste), renvoie une liste VIDE plutot que de deviner."],
+  "target_gender": "'femmes' si l opportunite est explicitement reservee aux femmes/filles (ex: bourse Women in STEM, leadership feminin), 'hommes' si explicitement reservee aux hommes (rare), sinon 'tous'",
   "min_age": null,
   "max_age": null,
   "requires_recommendation": true or false,
@@ -89,13 +117,25 @@ Reponds UNIQUEMENT avec ce JSON valide, sans backticks :
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
-            max_tokens=500,
+            max_tokens=800,
         )
 
         raw = completion.choices[0].message.content.strip()
         raw = raw.replace("```json", "").replace("```", "").strip()
         result = json.loads(raw)
-        logger.info(f"IA extraction OK pour {opp.id}: {result.get('required_docs')}")
+
+        # Validation : on ne garde que des filieres reellement dans notre taxonomie
+        # (protege contre une hallucination du modele hors liste)
+        result["target_fields"] = [
+            f for f in result.get("target_fields", []) if f in FIELD_TAXONOMY
+        ]
+        result["specific_documents"] = [
+            str(d) for d in result.get("specific_documents", []) if d
+        ][:8]
+        if result.get("target_gender") not in ("femmes", "hommes", "tous"):
+            result["target_gender"] = "tous"
+
+        logger.info(f"IA extraction OK pour {opp.id}: docs={result.get('required_docs')} fields={result.get('target_fields')}")
         return result
 
     except Exception as e:
@@ -103,6 +143,9 @@ Reponds UNIQUEMENT avec ce JSON valide, sans backticks :
         return {
             "ai_extracted": False,
             "required_docs": ["cv", "releve"],
+            "specific_documents": [],
+            "target_fields": [],
+            "target_gender": "tous",
             "key_skills": [],
             "lang_tests": [],
             "specific_criteria": [],
@@ -153,7 +196,7 @@ def compute_preparation_score(user: User, opp: Opportunity, db: Session) -> dict
     checks.append({
         "label": "Niveau d etudes",
         "ok": not opp.required_level or user.level in opp.required_level,
-        "fix": f"Niveau requis : {', '.join(opp.required_level or [])}",
+        "fix": f"Opportunite reservee aux : {', '.join(opp.required_level or [])}",
         "category": "academic",
     })
 
@@ -208,14 +251,19 @@ def compute_preparation_score(user: User, opp: Opportunity, db: Session) -> dict
             "category": "academic",
         })
 
-    # --- Documents vraiment requis ---
-    required_docs = requirements.get("required_docs", ["cv", "releve"])
+    if opp.target_gender and opp.target_gender != "tous":
+        checks.append({
+            "label": "Genre",
+            "ok": bool(user.gender) and user.gender == opp.target_gender,
+            "fix": f"Opportunite reservee aux : {opp.target_gender}",
+            "category": "academic",
+        })
 
-    # Toujours verifier CV et releve comme base
-    if "cv" not in required_docs:
-        required_docs = ["cv"] + required_docs
-    if "releve" not in required_docs:
-        required_docs = required_docs + ["releve"]
+    # --- Documents vraiment requis ---
+    # On fait confiance a ce que l IA (ou le fallback explicite si non-extrait) a determine.
+    # On ne force plus cv/releve artificiellement : une opportunite qui ne les demande pas
+    # ne doit pas les afficher comme manquants.
+    required_docs = requirements.get("required_docs", [])
 
     for doc_type in required_docs:
         # Mapper les types IA vers les types coffre-fort
@@ -244,6 +292,18 @@ def compute_preparation_score(user: User, opp: Opportunity, db: Session) -> dict
             "ok": has_document(db, user.id, vault_type),
             "fix": DOC_FIX.get(doc_type, f"Uploade ce document dans le coffre-fort"),
             "category": "document",
+        })
+
+    # Documents specifiques cites dans le texte mais hors taxonomie coffre-fort
+    # (ex: acte de naissance, casier judiciaire, registre de commerce...) —
+    # on ne peut pas les verifier automatiquement, mais on ne les cache plus
+    # dans un "Autre document" generique : chacun apparait avec son vrai libelle.
+    for specific_doc in requirements.get("specific_documents", []):
+        checks.append({
+            "label": specific_doc,
+            "ok": False,
+            "fix": "Document specifique a cette opportunite — prepare-le selon l annonce officielle",
+            "category": "document_specific",
         })
 
     # --- Profil complet ---
@@ -295,6 +355,8 @@ def compute_preparation_score(user: User, opp: Opportunity, db: Session) -> dict
             "lang_tests": requirements.get("lang_tests", []),
             "min_gpa": opp.min_gpa,
             "required_docs": requirements.get("required_docs", []),
+            "specific_documents": requirements.get("specific_documents", []),
+            "target_fields": requirements.get("target_fields", []),
             "key_skills": requirements.get("key_skills", []),
             "country": opp.country or "",
             "type": opp.type,
@@ -302,3 +364,34 @@ def compute_preparation_score(user: User, opp: Opportunity, db: Session) -> dict
         "application_method": requirements.get("application_method", "formulaire_en_ligne"),
         "requires_recommendation": requirements.get("requires_recommendation", False),
     }
+
+
+def persist_ai_classification(db: Session, opp: Opportunity) -> dict:
+    """
+    Lance (ou reutilise) l extraction IA pour une opportunite, et persiste
+    le resultat en base :
+      - opp.required_docs (JSONB)  -> deja fait par extract_requirements_from_description
+        via l appelant habituel (compute_preparation_score) ; ici on l ecrit nous-memes
+        car cette fonction peut etre appelee AVANT toute visite utilisateur (crawl/backfill).
+      - opp.required_fields (colonne reelle utilisee par le matching cote feed) :
+        rempli UNIQUEMENT si vide, pour ne jamais ecraser une valeur saisie a la main
+        par une organisation qui publie elle-meme son opportunite.
+
+    Idempotent : si deja classifie (ai_extracted True en base), ne rappelle pas Groq.
+    """
+    result = extract_requirements_from_description(opp, use_backfill_key=True)
+
+    # On persiste le blob complet (documents + criteres) dans required_docs
+    opp.required_docs = result
+
+    # On ne remplit required_fields que s il est actuellement vide, pour respecter
+    # une valeur deja fixee manuellement (ex: organisation ayant publie son offre).
+    if not opp.required_fields:
+        opp.required_fields = result.get("target_fields", [])
+    if not opp.target_gender:
+        opp.target_gender = result.get("target_gender", "tous")
+
+    db.add(opp)
+    db.commit()
+    db.refresh(opp)
+    return result

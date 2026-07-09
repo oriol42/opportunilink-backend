@@ -53,6 +53,7 @@ class UserProfileUpdate(BaseModel):
     city: Optional[str] = None
     gpa: Optional[float] = None
     age: Optional[int] = None
+    gender: Optional[str] = None      # 'homme' / 'femme' — optionnel
     phone: Optional[str] = None
     languages: Optional[list[str]] = None
     skills: Optional[list[str]] = None
@@ -89,6 +90,7 @@ class UserResponse(UserBase):
     city: Optional[str]
     gpa: Optional[float]
     age: Optional[int] = None
+    gender: Optional[str] = None
     phone: Optional[str]
     languages: list[str] = []
     skills: list[str] = []
