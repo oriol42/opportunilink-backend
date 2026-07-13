@@ -5,6 +5,7 @@ import os
 import time
 from app.celery_app import celery_app
 from app.database import SessionLocal
+from sqlalchemy import or_
 
 logger = logging.getLogger(__name__)
 
@@ -140,17 +141,21 @@ def classify_unclassified_opportunities(batch_size: int = 50):
     db = SessionLocal()
     classified, errors = 0, 0
     try:
-        candidates = (
+        # Filtre "pas encore classifie" directement en SQL (colonne JSONB), pas en Python
+        # apres avoir limite aux N plus recentes -- sinon des qu'un lot recent est fait,
+        # les opportunites plus anciennes ne sont plus jamais vues (bug corrige ici).
+        not_classified = or_(
+            Opportunity.required_docs.is_(None),
+            Opportunity.required_docs["ai_extracted"].astext.is_(None),
+            Opportunity.required_docs["ai_extracted"].astext != "true",
+        )
+        todo = (
             db.query(Opportunity)
-            .filter(Opportunity.is_active == True)
+            .filter(Opportunity.is_active == True, not_classified)
             .order_by(Opportunity.created_at.desc())
-            .limit(batch_size * 4)  # marge car on filtre ensuite en Python
+            .limit(batch_size)
             .all()
         )
-        todo = [
-            o for o in candidates
-            if not (o.required_docs and o.required_docs.get("ai_extracted"))
-        ][:batch_size]
 
         for opp in todo:
             try:

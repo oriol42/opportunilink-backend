@@ -5,7 +5,7 @@ from app.config import settings
 from app.models.user import User
 from app.models.opportunity import Opportunity
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 LANGUAGE_NAMES = {
     "fr": "français", "en": "anglais", "de": "allemand",
@@ -32,19 +32,30 @@ def _get_client():
 # serveur (pas besoin de gérer un tool-calling maison, ni de clé Tavily).
 # On détecte juste si la question a besoin d'infos fraîches, et si oui on
 # route vers ce modèle pour CET échange uniquement (le reste du chat continue
-# sur llama-3.3-70b-versatile, plus rapide et déjà bien réglé pour le ton du coach).
+# sur openai/gpt-oss-120b, le remplaçant recommandé par Groq).
 COMPOUND_MODEL = "groq/compound"
 
 _FRESH_INFO_KEYWORDS = (
-    "quand", "date limite", "deadline", "ouvre", "ouverture", "cette année",
-    "en 2026", "en 2027", "récent", "récemment", "actualité", "aujourd'hui",
-    "dernier", "dernière", "nouveau critère", "nouvelle règle", "à jour",
+    "quand", "date limite", "deadline", "ouvre", "ouverture", "cette annee",
+    "en 2026", "en 2027", "recent", "recemment", "actualite", "aujourd'hui",
+    "dernier", "derniere", "nouveau critere", "nouvelle regle", "a jour",
     "when", "latest", "this year", "currently", "open now",
 )
 
 
+def _strip_accents(s: str) -> str:
+    import unicodedata
+    return "".join(
+        c for c in unicodedata.normalize("NFD", s)
+        if unicodedata.category(c) != "Mn"
+    )
+
+
 def _needs_fresh_info(message: str) -> bool:
-    m = message.lower()
+    # On enleve les accents avant de comparer : les etudiants tapent vite et
+    # sans accents ("cette anne", "derniere") -- sans ca, le mot-cle ne
+    # matchait jamais et la question ne declenchait pas la recherche web.
+    m = _strip_accents(message.lower())
     return any(kw in m for kw in _FRESH_INFO_KEYWORDS)
 
 
@@ -367,7 +378,13 @@ def chat_with_coach(
             "content": (
                 "Cette question porte sur une information datée ou potentiellement récente. "
                 "Utilise ta capacité de recherche web pour vérifier l'info actuelle avant de répondre — "
-                "ne réponds pas de mémoire. Cite la source (nom du site) dans ta réponse."
+                "ne réponds pas de mémoire. Cite la source (nom du site) dans ta réponse. "
+                "Si tu ne trouves pas l'info exacte pour cette année précise (ex: date d'ouverture "
+                "pas encore annoncée), donne quand même l'information la plus utile que tu as trouvée "
+                "(ex: dates des éditions précédentes, période habituelle d'ouverture) en précisant "
+                "clairement que c'est une estimation basée sur les années passées — n'te contente "
+                "JAMAIS de renvoyer juste vers le site officiel sans rien de concret, ce n'est pas une "
+                "réponse utile pour l'étudiant."
             ),
         })
 

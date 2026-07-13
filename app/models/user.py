@@ -15,7 +15,7 @@ class User(TimeStampedModel):
     full_name = Column(String, nullable=False)
 
     # Academic profile
-    level = Column(String, nullable=True)   # Licence / Master / Doctorat / BTS
+    level = Column(String, nullable=True)   # Bac / Licence / Master / Doctorat / BTS
     field = Column(String, nullable=True)   # Informatique, Droit, Médecine...
     city = Column(String, nullable=True)    # Yaoundé, Douala...
     gpa = Column(Float, nullable=True)      # Moyenne / 20

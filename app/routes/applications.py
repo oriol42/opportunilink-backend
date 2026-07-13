@@ -53,6 +53,9 @@ class ApplyResponse(BaseModel):
 def detect_application_method(opp: Opportunity) -> dict:
     """
     Detecte comment postuler a cette opportunite.
+    Priorite a la classification IA (scoring.py, opp.required_docs.application_method)
+    si l'extraction a deja tourne pour cette opportunite ; sinon on retombe sur
+    l'heuristique regex ci-dessous (opportunite trop recente, pas encore classifiee).
     Retourne : method, action_url, contact_email
     """
     source = opp.source_url or ""
@@ -68,6 +71,14 @@ def detect_application_method(opp: Opportunity) -> dict:
         if not any(x in email for x in ["example", "exemple", "test", "noreply"]):
             contact_email = email
             break
+
+    ai = opp.required_docs or {}
+    if ai.get("ai_extracted") and ai.get("application_method"):
+        ai_method = ai["application_method"]
+        if ai_method == "email" and contact_email:
+            return {"method": "email", "action_url": f"mailto:{contact_email}", "contact_email": contact_email}
+        # formulaire_en_ligne / plateforme / courrier / email-sans-adresse-trouvee -> lien externe
+        return {"method": "external_link", "action_url": source, "contact_email": contact_email}
 
     # Detecter plateformes avec formulaire en ligne
     online_platforms = [

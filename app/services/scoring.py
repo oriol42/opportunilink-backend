@@ -61,6 +61,8 @@ def extract_requirements_from_description(opp: Opportunity, use_backfill_key: bo
             "specific_criteria": [],
             "target_fields": [],  # inconnu -> on ne restreint pas
             "target_gender": "tous",
+            "has_salary": False,
+            "salary_text": None,
         }
 
     try:
@@ -107,11 +109,14 @@ Reponds UNIQUEMENT avec ce JSON valide, sans backticks :
   "max_age": null,
   "requires_recommendation": true or false,
   "requires_motivation_letter": true or false,
-  "application_method": "email ou formulaire_en_ligne ou courrier ou plateforme"
+  "application_method": "email ou formulaire_en_ligne ou courrier ou plateforme",
+  "has_salary": true or false,
+  "salary_text": "le montant/la remuneration TELLE QUE MENTIONNEE dans le texte (ex: '800 EUR/mois', 'Bourse de 500000 FCFA/an', 'Salaire competitif selon experience') ou null si aucune remuneration n est mentionnee. Une bourse qui couvre juste les frais de scolarite n est PAS un salaire -- ne compte que les vraies allocations/salaires/stipends verses a la personne."
 }}"""
 
         completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
+            reasoning_effort="low",
             messages=[
                 {"role": "system", "content": "Tu es un expert en analyse d offres de bourses et stages. Reponds uniquement en JSON valide."},
                 {"role": "user", "content": prompt},
@@ -152,6 +157,8 @@ Reponds UNIQUEMENT avec ce JSON valide, sans backticks :
             "requires_recommendation": False,
             "requires_motivation_letter": True,
             "application_method": "formulaire_en_ligne",
+            "has_salary": False,
+            "salary_text": None,
         }
 
 

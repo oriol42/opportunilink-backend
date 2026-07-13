@@ -48,7 +48,7 @@ class UserProfileUpdate(BaseModel):
     This pattern is called a PATCH schema.
     """
     full_name: Optional[str] = None
-    level: Optional[str] = None       # Licence / Master / Doctorat / BTS
+    level: Optional[str] = None       # Bac / Licence / Master / Doctorat / BTS
     field: Optional[str] = None       # Informatique, Droit...
     city: Optional[str] = None
     gpa: Optional[float] = None
