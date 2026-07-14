@@ -50,6 +50,7 @@ OBJECTIVE_TO_TYPES = {
 
 
 def compute_profile_match_score(user: User, opp: Opportunity) -> float:
+    from app.services.embeddings import cosine_similarity
     score = 0.0
 
     # 1. Objectif de carrière ↔ type d'opportunité (signal le plus fort)
@@ -57,17 +58,28 @@ def compute_profile_match_score(user: User, opp: Opportunity) -> float:
     for obj in (user.objectives or []):
         wanted_types |= OBJECTIVE_TO_TYPES.get(obj, set())
     if wanted_types and opp.type in wanted_types:
-        score += 35
+        score += 30
 
     # 2. Filière : match officiel (required_fields) > simple mention dans la description
     if user.field:
         if opp.required_fields and user.field in opp.required_fields:
-            score += 30
+            score += 25
         elif opp.description and user.field.lower() in opp.description.lower():
-            score += 15
+            score += 10
 
-    # 3. Compétences de l'étudiant mentionnées dans la description
-    if user.skills and opp.description:
+    # 3. Similarité sémantique (embeddings) — remplace le comptage de mots-clés.
+    #    Capte les synonymes, reformulations, et le mélange français/anglais
+    #    des descriptions scrapées, contrairement à l'intersection exacte de mots.
+    if user.skills_embedding is not None and opp.embedding is not None:
+        similarity = cosine_similarity(user.skills_embedding, opp.embedding)
+        # Le cosinus pour ce modèle tourne en pratique plutôt entre 0.6 et 0.95
+        # sur du texte réel. On étale cette plage sur [0, 45] pour un score utile.
+        # À RECALIBRER après quelques semaines de données réelles.
+        normalized = max(0.0, min(1.0, (similarity - 0.6) / 0.35))
+        score += normalized * 45
+    elif user.skills and opp.description:
+        # Fallback tant que l'embedding n'est pas encore calculé pour cette
+        # opportunité ou ce profil (juste après migration, avant le backfill).
         user_skills = set(s.lower() for s in user.skills)
         matches = len(user_skills.intersection(extract_keywords(opp.description)))
         score += min(matches * 8, 25)

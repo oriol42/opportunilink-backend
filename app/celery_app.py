@@ -12,6 +12,7 @@ celery_app = Celery(
     include=[
         "app.tasks.alert_tasks",
         "app.tasks.crawler_tasks",
+        "app.tasks.embedding_tasks",
     ],
 )
 

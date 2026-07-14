@@ -5,6 +5,7 @@ from sqlalchemy import Column, String, Text, Float, Integer, Boolean, Date, Fore
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.models.base import TimeStampedModel
+from pgvector.sqlalchemy import Vector
 
 
 class Opportunity(TimeStampedModel):
@@ -33,6 +34,10 @@ class Opportunity(TimeStampedModel):
     # JSONB — flexible structure for required documents
     # Example: {"required": ["cv", "lettre", "releve"], "optional": ["portfolio"]}
     required_docs = Column(JSONB, default=dict)
+
+    # Vecteur semantique (titre + description) pour le matching par similarite.
+    # Calcule a la classification IA (persist_ai_classification), 384 dims (e5-small).
+    embedding = Column(Vector(384), nullable=True)
 
     # Destination
     country = Column(String, nullable=True)

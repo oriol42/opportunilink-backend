@@ -391,6 +391,15 @@ def persist_ai_classification(db: Session, opp: Opportunity) -> dict:
     # On persiste le blob complet (documents + criteres) dans required_docs
     opp.required_docs = result
 
+    # Calcul de l'embedding semantique (titre + description) pour le matching
+    # par similarite dans le feed. Ne recalcule pas si deja present.
+    if opp.embedding is None:
+        try:
+            from app.services.embeddings import embed_passage, build_opportunity_text
+            opp.embedding = embed_passage(build_opportunity_text(opp))
+        except Exception as e:
+            logger.warning(f"Calcul embedding echoue pour {opp.id}: {e}")
+
     # On ne remplit required_fields que s il est actuellement vide, pour respecter
     # une valeur deja fixee manuellement (ex: organisation ayant publie son offre).
     if not opp.required_fields:

@@ -73,6 +73,14 @@ def update_my_profile(
     from app.services.cache import cache_delete_pattern
     cache_delete_pattern(f"feed:user:{current_user.id}*")
 
+    # Recalcule l'embedding semantique en tache de fond si un champ pertinent
+    # pour le matching a change. En Celery : le modele (~220MB) ne charge
+    # jamais dans le process web, seulement dans le worker.
+    relevant_fields = {"field", "skills", "objectives"}
+    if relevant_fields.intersection(update_data.keys()):
+        from app.tasks.embedding_tasks import recompute_user_embedding
+        recompute_user_embedding.delay(str(current_user.id))
+
     return current_user
 
 

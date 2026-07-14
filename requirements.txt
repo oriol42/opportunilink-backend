@@ -43,3 +43,7 @@ pypdf==5.1.0
 
 # Crawler
 scrapy==2.11.2
+
+# Embeddings semantiques (matching profil <-> opportunite)
+fastembed==0.3.6
+pgvector==0.3.6

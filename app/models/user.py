@@ -5,6 +5,7 @@ from sqlalchemy import Column, String, Float, Integer, Boolean, ARRAY, ForeignKe
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 from app.models.base import TimeStampedModel
+from pgvector.sqlalchemy import Vector
 
 
 class User(TimeStampedModel):
@@ -30,6 +31,10 @@ class User(TimeStampedModel):
 
     # JSONB — niveau de maîtrise par compétence, ex: {"Python": 75, "React": 50}
     skills_with_level = Column(JSONB, default=dict)
+
+    # Vecteur semantique du profil (filiere + competences + objectifs),
+    # recalcule a chaque mise a jour de profil. 384 dims (e5-small).
+    skills_embedding = Column(Vector(384), nullable=True)
 
     # Contact
     phone = Column(String, nullable=True)  # For SMS alerts
