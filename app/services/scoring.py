@@ -50,11 +50,31 @@ def extract_requirements_from_description(opp: Opportunity, use_backfill_key: bo
     if opp.required_docs and opp.required_docs.get("ai_extracted"):
         return opp.required_docs
 
-    # Si pas de description, retourner des defaults
-    if not opp.description or len(opp.description) < 50:
+    # Description scrapee trop pauvre pour etre analysee -> cas frequent quand
+    # l'annonce source n'est qu'un lien vers un PDF officiel (l'IA n'a alors
+    # litteralement rien a lire). On tente de recuperer le PDF avant d'abandonner.
+    effective_description = opp.description or ""
+    pdf_info = None
+    used_pdf = False
+    if len(effective_description) < 150:
+        from app.services.opportunity_pdf import fetch_pdf_text_for_opportunity
+        pdf_info = fetch_pdf_text_for_opportunity(opp.source_url)
+        if pdf_info["text"]:
+            effective_description = (effective_description + "\n\n" + pdf_info["text"]).strip()
+            used_pdf = True
+            logger.info(f"[pdf_fetch] Description enrichie via PDF pour {opp.id} ({len(pdf_info['text'])} chars)")
+
+    # Toujours rien d'exploitable -> on ne devine pas
+    if not effective_description or len(effective_description) < 50:
+        # Un PDF a ete trouve et telecharge mais aucun texte n'a pu en etre extrait
+        # (scan/image) : echec DEFINITIF (retenter ne changera rien sans OCR), donc
+        # on marque ai_extracted=True pour ne plus le retenter chaque nuit et ne pas
+        # gaspiller le quota Groq sur un cas perdu d'avance.
+        pdf_unreadable = bool(pdf_info and pdf_info.get("found_but_unreadable"))
         return {
-            "ai_extracted": False,
+            "ai_extracted": pdf_unreadable,
             "documents_unknown": True,  # on ne sait vraiment pas -> ne pas inventer
+            "pdf_unreadable": pdf_unreadable,
             "required_docs": [],
             "specific_documents": [],
             "key_skills": [],
@@ -90,7 +110,7 @@ def extract_requirements_from_description(opp: Opportunity, use_backfill_key: bo
         prompt = f"""Analyse cette description d opportunite et extrait les informations en JSON.
 
 DESCRIPTION :
-{opp.description[:1500]}
+{effective_description[:3000]}
 
 TITRE : {opp.title}
 TYPE : {opp.type}
@@ -142,7 +162,12 @@ Reponds UNIQUEMENT avec ce JSON valide, sans backticks :
             result["target_gender"] = "tous"
 
         result["documents_unknown"] = False
-        logger.info(f"IA extraction OK pour {opp.id}: docs={result.get('required_docs')} fields={result.get('target_fields')}")
+        if used_pdf:
+            result["enriched_description"] = effective_description[:3000]
+        logger.info(
+            f"IA extraction OK pour {opp.id}: docs={result.get('required_docs')} "
+            f"fields={result.get('target_fields')}" + (" [via PDF]" if used_pdf else "")
+        )
         return result
 
     except Exception as e:
@@ -401,6 +426,17 @@ def persist_ai_classification(db: Session, opp: Opportunity) -> dict:
     Idempotent : si deja classifie (ai_extracted True en base), ne rappelle pas Groq.
     """
     result = extract_requirements_from_description(opp, use_backfill_key=True)
+
+    # Si l'IA a du aller chercher le contenu dans un PDF lie (annonce source
+    # trop pauvre), on persiste ce texte dans la description elle-meme : ca
+    # profite a TOUT le reste de l'app (Link IA, generation de lettre/CV,
+    # embeddings semantiques), pas seulement a cette extraction ponctuelle.
+    enriched = result.pop("enriched_description", None)
+    if enriched and (not opp.description or len(opp.description) < 150):
+        opp.description = enriched
+        opp.embedding = None  # force le recalcul plus bas : l'ancien embedding
+                               # (ou son absence) correspondait a une description quasi vide
+        logger.info(f"Description de {opp.id} enrichie depuis un PDF source ({len(enriched)} chars)")
 
     # On persiste le blob complet (documents + criteres) dans required_docs
     opp.required_docs = result
