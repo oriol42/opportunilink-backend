@@ -54,7 +54,8 @@ def extract_requirements_from_description(opp: Opportunity, use_backfill_key: bo
     if not opp.description or len(opp.description) < 50:
         return {
             "ai_extracted": False,
-            "required_docs": ["cv", "releve"],
+            "documents_unknown": True,  # on ne sait vraiment pas -> ne pas inventer
+            "required_docs": [],
             "specific_documents": [],
             "key_skills": [],
             "lang_tests": [],
@@ -140,6 +141,7 @@ Reponds UNIQUEMENT avec ce JSON valide, sans backticks :
         if result.get("target_gender") not in ("femmes", "hommes", "tous"):
             result["target_gender"] = "tous"
 
+        result["documents_unknown"] = False
         logger.info(f"IA extraction OK pour {opp.id}: docs={result.get('required_docs')} fields={result.get('target_fields')}")
         return result
 
@@ -147,7 +149,8 @@ Reponds UNIQUEMENT avec ce JSON valide, sans backticks :
         logger.warning(f"IA extraction failed pour {opp.id}: {e} — fallback defaults")
         return {
             "ai_extracted": False,
-            "required_docs": ["cv", "releve"],
+            "documents_unknown": True,  # on ne sait vraiment pas -> ne pas inventer
+            "required_docs": [],
             "specific_documents": [],
             "target_fields": [],
             "target_gender": "tous",
@@ -155,7 +158,7 @@ Reponds UNIQUEMENT avec ce JSON valide, sans backticks :
             "lang_tests": [],
             "specific_criteria": [],
             "requires_recommendation": False,
-            "requires_motivation_letter": True,
+            "requires_motivation_letter": False,
             "application_method": "formulaire_en_ligne",
             "has_salary": False,
             "salary_text": None,
@@ -340,7 +343,17 @@ def compute_preparation_score(user: User, opp: Opportunity, db: Session) -> dict
     score = round((ok_count / total) * 100) if total > 0 else 0
     missing = [c for c in checks if not c["ok"]]
 
-    if score == 100:
+    # On ne connait pas les documents requis pour cette opportunite (description
+    # trop pauvre pour l IA, ou echec d extraction) — le score ne doit pas laisser
+    # croire que "rien n est manquant" juste parce qu on n a rien pu verifier.
+    documents_unknown = bool(requirements.get("documents_unknown"))
+
+    if documents_unknown:
+        message = (
+            f"Score base sur ton profil ({score}%) — documents requis non detectes, "
+            f"verifie l annonce officielle avant de candidater."
+        )
+    elif score == 100:
         message = "Ton dossier est complet ! Tu peux candidater."
     elif score >= 70:
         missing_labels = ", ".join(m["label"] for m in missing[:2])
@@ -354,6 +367,7 @@ def compute_preparation_score(user: User, opp: Opportunity, db: Session) -> dict
         "checks": checks,
         "missing": missing,
         "message": message,
+        "documents_unknown": documents_unknown,
         "ok_count": ok_count,
         "total_checks": total,
         "requirements": {

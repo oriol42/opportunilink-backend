@@ -4,10 +4,12 @@ import re
 import uuid
 import logging
 import unicodedata
+from difflib import SequenceMatcher
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.database import SessionLocal
 from app.models.opportunity import Opportunity
+from app.services.quality import looks_expired_by_academic_year
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +231,31 @@ class OpportunityPipeline:
             if len(description) < MIN_DESCRIPTION_LENGTH:
                 logger.warning(
                     f"[pipeline] ✗ Description trop courte ({len(description)} chars) : '{title[:60]}'"
+                )
+                self.skipped_count += 1
+                return item
+
+            # Certains spiders n'ont pas de vrai corps de texte a scraper (page
+            # qui ne fait que pointer vers un PDF, par ex.) et recyclent le titre
+            # comme description. Une description longue peut donc quand meme
+            # etre "fausse" — on compare sa similarite au titre, pas juste sa taille.
+            title_vs_desc = SequenceMatcher(
+                None, title.lower(), description[: len(title) + 20].lower()
+            ).ratio()
+            if title_vs_desc > 0.85:
+                logger.warning(
+                    f"[pipeline] ✗ Description quasi-identique au titre "
+                    f"(similarite {title_vs_desc:.2f}) : '{title[:60]}'"
+                )
+                self.skipped_count += 1
+                return item
+
+            # Sans deadline explicite, une opportunite qui mentionne une annee
+            # academique deja terminee (ex: 2023/2024) resterait "active" pour
+            # toujours dans le feed — on la rejette directement a l'entree.
+            if not item.get("deadline") and looks_expired_by_academic_year(title, description):
+                logger.warning(
+                    f"[pipeline] ✗ Annee academique perimee detectee : '{title[:60]}'"
                 )
                 self.skipped_count += 1
                 return item
